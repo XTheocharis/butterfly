@@ -1,6 +1,7 @@
 #include "serial.h"
 #include "bsp.h"
 #include <whad.h>
+#include "nrf.h"
 
 uint8_t tmp_buf[64];
 
@@ -59,6 +60,17 @@ void SerialComm::cdcAcmHandler(app_usbd_class_inst_t const * p_inst, app_usbd_cd
             size = app_usbd_cdc_acm_rx_size(&m_app_cdc_acm);
             if (size > 0)
             {
+#ifdef BOARD_CLUE
+                for (int i = 0; i + 2 < size; i++) {
+                    if (instance->rxBuffer[i] == 'D' &&
+                        instance->rxBuffer[i+1] == 'F' &&
+                        instance->rxBuffer[i+2] == 'U')
+                    {
+                        NRF_POWER->GPREGRET = 0x57;
+                        NVIC_SystemReset();
+                    }
+                }
+#endif
                 /* Forward read data to WHAD library. */
                 whad_transport_data_received(instance->rxBuffer, size);
             }

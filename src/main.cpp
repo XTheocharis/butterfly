@@ -24,9 +24,6 @@ static inline void clue_softdevice_disable(void) {
 #endif
 
 int main(void) {
-#ifdef BOARD_CLUE
-	clue_softdevice_disable();
-#endif
 	Core core;
 	core.init();
 	core.loop();

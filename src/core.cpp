@@ -1,6 +1,8 @@
 #include "core.h"
 #include "capabilities.h"
 #include <whad.h>
+#include "nrf.h"
+#include "nrf_delay.h"
 
 // Global instance of Core
 Core* Core::instance = NULL;
@@ -66,12 +68,10 @@ void Core::processDiscoveryInputMessage(whad::discovery::DiscoveryMsg msg) {
         /* Device reset message processing. */
         case whad::discovery::MessageType::DeviceResetMsg:
             {
-                // Disable controller
                 this->radio->disable();
                 this->currentController = NULL;
                 this->radio->setController(NULL);
 
-                // Send Ready Response
                 response = new whad::discovery::ReadyResp();
             }
             break;
@@ -1654,6 +1654,7 @@ void core_send_bytes(uint8_t *p_bytes, int size)
 Core::Core() {
 	instance = this;
 	this->ledModule = new LedModule();
+	this->displayModule = new DisplayModule();
 	this->timerModule = new TimerModule();
 	this->sequenceModule = new SequenceModule();
 	this->serialModule = new SerialComm();
@@ -1689,6 +1690,10 @@ LedModule* Core::getLedModule() {
 	return (this->ledModule);
 }
 
+DisplayModule* Core::getDisplayModule() {
+	return (this->displayModule);
+}
+
 SerialComm *Core::getSerialModule() {
 	return (this->serialModule);
 }
@@ -1716,6 +1721,13 @@ void Core::init() {
 	this->messageQueue.firstElement = NULL;
 	this->messageQueue.lastElement = NULL;
 
+#ifdef BOARD_CLUE
+	this->displayModule->init();
+	this->displayModule->drawText(4, 4, "BUTTERFLY", COLOR_CYAN, COLOR_BLACK);
+	this->displayModule->drawText(4, 16, "v1.1.5", COLOR_GRAY, COLOR_BLACK);
+	this->displayModule->drawText(4, 32, "IDLE", COLOR_WHITE, COLOR_BLACK);
+#endif
+
 
 	this->bleController = new BLEController(this->getRadioModule());
 	this->dot15d4Controller = new Dot15d4Controller(this->getRadioModule());
@@ -1731,58 +1743,80 @@ void Core::init() {
 
 bool Core::selectController(Protocol controller) {
   //this->getLedModule()->on(LED2);
+	const char *protoName = NULL;
 	if (controller == BLE_PROTOCOL) {
     this->getLedModule()->setColor(BLUE);
+		protoName = "BLE";
 		this->radio->disable();
 		this->currentController = this->bleController;
 		this->radio->setController(this->currentController);
-		return true;
 	}
 	else if (controller == DOT15D4_PROTOCOL) {
     this->getLedModule()->setColor(GREEN);
+		protoName = "802.15.4";
 		this->radio->disable();
 		this->currentController = this->dot15d4Controller;
 		this->radio->setController(this->currentController);
-		return true;
 	}
 	else if (controller == ESB_PROTOCOL) {
     this->getLedModule()->setColor(PURPLE);
+		protoName = "ESB";
 		this->radio->disable();
 		this->currentController = this->esbController;
 		this->radio->setController(this->currentController);
-		return true;
 	}
 	else if (controller == ANT_PROTOCOL) {
     this->getLedModule()->setColor(RED);
+		protoName = "ANT";
 		this->radio->disable();
 		this->currentController = this->antController;
 		this->radio->setController(this->currentController);
-		return true;
 	}
 	else if (controller == MOSART_PROTOCOL) {
     this->getLedModule()->setColor(YELLOW);
+		protoName = "MOSART";
 		this->radio->disable();
 		this->currentController = this->mosartController;
 		this->radio->setController(this->currentController);
-		return true;
 	}
 	else if (controller == GENERIC_PROTOCOL) {
     this->getLedModule()->setColor(CYAN);
+		protoName = "PHY";
 		this->radio->disable();
 		this->currentController = this->genericController;
 		this->radio->setController(this->currentController);
-		return true;
 	}
 	else {
     //this->getLedModule()->off(LED2);
+		protoName = "IDLE";
 		this->radio->disable();
 		this->currentController = NULL;
 		this->radio->setController(NULL);
-		return false;
 	}
+
+#ifdef BOARD_CLUE
+	if (protoName) {
+		this->displayModule->fillRect(4, 32, 80, 8, COLOR_BLACK);
+		this->displayModule->drawText(4, 32, protoName, COLOR_WHITE, COLOR_BLACK);
+	}
+#else
+	(void)protoName;
+#endif
+
+	return (this->currentController != NULL);
 }
 
 void Core::sendDebug(const char *message) {
+}
+
+void Core::rebootBootloader() {
+#ifdef BOARD_CLUE
+	this->displayModule->fill(COLOR_BLACK);
+	this->displayModule->drawText(4, 4, "BOOTLOADER", COLOR_YELLOW, COLOR_BLACK);
+	nrf_delay_ms(100);
+	NRF_POWER->GPREGRET = 0xB1;
+	NVIC_SystemReset();
+#endif
 }
 
 void Core::sendDebug(uint8_t *buffer, uint8_t size) {

@@ -6,6 +6,7 @@
 
 #include "version.h"
 #include "led.h"
+#include "display.h"
 #include "serial.h"
 #include "timer.h"
 #include "radio.h"
@@ -30,6 +31,7 @@ class Core {
 	private:
         whad_transport_cfg_t transportConfig;
 		LedModule *ledModule;
+		DisplayModule *displayModule;
 		SerialComm *serialModule;
 		TimerModule *timerModule;
 		SequenceModule *sequenceModule;
@@ -51,6 +53,7 @@ class Core {
 
 		Core();
 		LedModule *getLedModule();
+		DisplayModule *getDisplayModule();
 		SerialComm *getSerialModule();
 		SequenceModule *getSequenceModule();
 		TimerModule *getTimerModule();
@@ -88,6 +91,7 @@ class Core {
 		//void handleCommand(Command *cmd);
 		void init();
 		void loop();
+		void rebootBootloader();
 
 };
 #endif

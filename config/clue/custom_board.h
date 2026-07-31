@@ -41,6 +41,19 @@ extern "C" {
 #define RTS_PIN_NUMBER 5
 #define HWFC           false
 
+/* ST7789 TFT display (240x240) */
+#define CLUE_TFT_SCK   NRF_GPIO_PIN_MAP(0,14)
+#define CLUE_TFT_MOSI  NRF_GPIO_PIN_MAP(0,15)
+#define CLUE_TFT_DC    NRF_GPIO_PIN_MAP(0,13)
+#define CLUE_TFT_CS    NRF_GPIO_PIN_MAP(0,12)
+#define CLUE_TFT_RST   NRF_GPIO_PIN_MAP(1,3)
+#define CLUE_TFT_BL    NRF_GPIO_PIN_MAP(1,5)
+#define CLUE_TFT_WIDTH  240
+#define CLUE_TFT_HEIGHT 240
+
+/* SPIM instance for TFT */
+#define CLUE_TFT_SPIM_INSTANCE  1
+
 #ifdef __cplusplus
 }
 #endif
