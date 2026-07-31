@@ -52,7 +52,7 @@ extern "C" {
 #define CLUE_TFT_HEIGHT 240
 
 /* SPIM instance for TFT */
-#define CLUE_TFT_SPIM_INSTANCE  1
+#define CLUE_TFT_SPIM_INSTANCE  2
 
 #ifdef __cplusplus
 }

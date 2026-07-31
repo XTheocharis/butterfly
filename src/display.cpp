@@ -5,6 +5,7 @@
 #include <string.h>
 #include "nrf.h"
 #include "nrf_delay.h"
+#include "nrfx_spim.h"
 #include "boards.h"
 #include "font.h"
 
@@ -15,9 +16,10 @@
 #define SCK_PIN     CLUE_TFT_SCK
 #define MOSI_PIN    CLUE_TFT_MOSI
 
+static const nrfx_spim_t spi = NRFX_SPIM_INSTANCE(CLUE_TFT_SPIM_INSTANCE);
+static bool spi_ready;
+
 static void spi_init(void) {
-    nrf_gpio_cfg_output(SCK_PIN);
-    nrf_gpio_cfg_output(MOSI_PIN);
     nrf_gpio_cfg_output(CS_PIN);
     nrf_gpio_cfg_output(DC_PIN);
     nrf_gpio_cfg_output(RST_PIN);
@@ -27,17 +29,33 @@ static void spi_init(void) {
     nrf_gpio_pin_set(DC_PIN);
     nrf_gpio_pin_set(RST_PIN);
     nrf_gpio_pin_clear(BL_PIN);
+
+    nrfx_spim_config_t config = NRFX_SPIM_DEFAULT_CONFIG;
+    config.sck_pin = SCK_PIN;
+    config.mosi_pin = MOSI_PIN;
+    config.miso_pin = NRFX_SPIM_PIN_NOT_USED;
+    config.ss_pin = NRFX_SPIM_PIN_NOT_USED;
+    config.frequency = NRF_SPIM_FREQ_4M;
+    config.mode = NRF_SPIM_MODE_0;
+    config.bit_order = NRF_SPIM_BIT_ORDER_MSB_FIRST;
+
+    spi_ready = (nrfx_spim_init(&spi, &config, NULL, NULL) == NRFX_SUCCESS);
+    if (!spi_ready) {
+        // Keep the USB/radio firmware alive if the peripheral is unavailable.
+        // The red LED is also a visible indication of an init failure.
+        nrf_gpio_pin_set(LED_1);
+    }
 }
 
 static void spi_write(const uint8_t *data, int len) {
-    for (int i = 0; i < len; i++) {
-        uint8_t byte = data[i];
-        for (int bit = 7; bit >= 0; bit--) {
-            if (byte & (1 << bit)) nrf_gpio_pin_set(MOSI_PIN);
-            else nrf_gpio_pin_clear(MOSI_PIN);
-            nrf_gpio_pin_set(SCK_PIN);
-            nrf_gpio_pin_clear(SCK_PIN);
-        }
+    if (!spi_ready || len <= 0) {
+        return;
+    }
+
+    nrfx_spim_xfer_desc_t transfer = NRFX_SPIM_XFER_TX(data, (size_t)len);
+    if (nrfx_spim_xfer(&spi, &transfer, 0) != NRFX_SUCCESS) {
+        spi_ready = false;
+        nrf_gpio_pin_set(LED_1);
     }
 }
 

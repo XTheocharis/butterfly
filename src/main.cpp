@@ -17,6 +17,9 @@ static inline void clue_softdevice_disable(void) {
 		__asm volatile("svc %1\n" : "=r"(ret) : "I"(0x11) : "memory");
 		(void)ret;
 	}
+	NRF_CLOCK->TASKS_HFCLKSTART = 1;
+	while (NRF_CLOCK->EVENTS_HFCLKSTARTED == 0) {}
+	NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
 	SCB->VTOR = APP_VTOR_ADDR;
 	__DSB();
 	__ISB();
@@ -24,6 +27,9 @@ static inline void clue_softdevice_disable(void) {
 #endif
 
 int main(void) {
+#ifdef BOARD_CLUE
+	clue_softdevice_disable();
+#endif
 	Core core;
 	core.init();
 	core.loop();
