@@ -3,6 +3,7 @@
 #include <whad.h>
 #include "nrf.h"
 #include "nrf_delay.h"
+#include "nrf_gpio.h"
 
 // Global instance of Core
 Core* Core::instance = NULL;
@@ -1726,6 +1727,8 @@ void Core::init() {
 	this->displayModule->drawText(4, 4, "BUTTERFLY", COLOR_CYAN, COLOR_BLACK);
 	this->displayModule->drawText(4, 16, "v1.1.5", COLOR_GRAY, COLOR_BLACK);
 	this->displayModule->drawText(4, 32, "IDLE", COLOR_WHITE, COLOR_BLACK);
+	nrf_gpio_cfg_input(NRF_GPIO_PIN_MAP(1,2), NRF_GPIO_PIN_PULLUP);
+	nrf_gpio_cfg_input(NRF_GPIO_PIN_MAP(1,10), NRF_GPIO_PIN_PULLUP);
 #endif
 
 
@@ -1875,8 +1878,26 @@ void Core::sendVerbose(const char* data) {
 
 void Core::loop() {
     Message *message = this->popMessageFromQueue();
+#ifdef BOARD_CLUE
+	static uint32_t btnDebounce = 0;
+	static bool btnAState = true;
+	static bool backlight = true;
+#endif
 
 	while (true) {
+
+#ifdef BOARD_CLUE
+		if (btnDebounce > 0) btnDebounce--;
+		else {
+			bool btnA = nrf_gpio_pin_read(NRF_GPIO_PIN_MAP(1,2));
+			if (!btnA && btnAState) {
+				backlight = !backlight;
+				this->displayModule->setBacklight(backlight);
+				btnDebounce = 50000;
+			}
+			btnAState = btnA;
+		}
+#endif
 
 		this->serialModule->process();
         //this->getLedModule()->on(LED1);
