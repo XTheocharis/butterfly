@@ -13,3 +13,6 @@ tests/host/*.asan.o
 
 # OMO orchestrator state
 .omo/
+
+# AI agent workspace files (per-repo, not upstream)
+AGENTS.md
