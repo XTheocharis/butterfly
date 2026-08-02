@@ -6,6 +6,7 @@
 #include "stddef.h"
 #include "string.h"
 #include "whad.h"
+#include "messagePool.h"
 
 #define LLID_CONTINUE 1
 #define LLID_START 		2
@@ -32,10 +33,12 @@ class Packet {
 		uint8_t channel;
 		uint8_t source;
 		CrcValue crcValue;
+		bool valid;
 
 	public:
 		Packet(PacketType packetType,uint8_t *packetBuffer, size_t packetSize, uint32_t timestamp, uint8_t source, uint8_t channel, int8_t rssi, CrcValue crcValue);
 		~Packet();
+		bool isValid();
 		uint8_t *getPacketBuffer();
 		size_t getPacketSize();
 		PacketType getPacketType();

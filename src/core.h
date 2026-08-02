@@ -13,6 +13,13 @@
 #include "sequences/sequenceModule.h"
 
 #include "messageQueue.h"
+#include "messagePool.h"
+#include "runtime.h"
+
+#ifdef BOARD_CLUE
+#include "boardModule.h"
+#include "menu.h"
+#endif
 
 #include "controller.h"
 #include "controllers/blecontroller.h"
@@ -48,16 +55,27 @@ class Core {
 		GenericController *genericController;
 		Controller* currentController;
 
+#ifdef BOARD_CLUE
+		BoardModule *boardModule;
+		MenuManager *menuManager;
+#endif
+
+		runtime_mode_t m_runtimeMode;
+
 	public:
 		static Core *instance;
 
-		Core();
+		Core(runtime_mode_t mode = RUNTIME_RAW_WHAD);
 		LedModule *getLedModule();
 		DisplayModule *getDisplayModule();
 		SerialComm *getSerialModule();
 		SequenceModule *getSequenceModule();
 		TimerModule *getTimerModule();
 		Radio *getRadioModule();
+
+		/* Runtime-aware accessors. */
+		runtime_mode_t getRuntimeMode(void) const;
+		bool hasRawRadio(void) const;
 
 		void setControllerChannel(int channel);
 
@@ -82,8 +100,8 @@ class Core {
 
 		bool selectController(Protocol controller);
 
-        void pushMessageToQueue(whad::NanoPbMsg *msg);
-		void pushMessageToQueue(Message *msg);
+		MessagePoolStatus pushMessageToQueue(whad::NanoPbMsg *msg, MessagePoolTrafficClass trafficClass = MESSAGE_POOL_TRAFFIC_COMMAND_RESPONSE, uint32_t sourceTimestamp = 0);
+		MessagePoolStatus pushMessageToQueue(Message *msg, MessagePoolTrafficClass trafficClass = MESSAGE_POOL_TRAFFIC_COMMAND_RESPONSE, uint32_t sourceTimestamp = 0);
 		Message* popMessageFromQueue();
 
 		bool sendMessage(Message *msg);
@@ -91,7 +109,6 @@ class Core {
 		//void handleCommand(Command *cmd);
 		void init();
 		void loop();
-		void rebootBootloader();
 
 };
 #endif

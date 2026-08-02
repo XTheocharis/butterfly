@@ -22,6 +22,14 @@ typedef struct Dot15d4AttackStatus {
 	bool successful;
 } Dot15d4AttackStatus;
 
+typedef struct Dot15d4DecodedPacket {
+	uint8_t packet[50];
+	uint8_t size;
+	Dot15d4Source source;
+	CrcValue fcsValue;
+	uint8_t lqi;
+} Dot15d4DecodedPacket;
+
 typedef enum Dot15d4ControllerState {
 	RECEIVING,
 	ENERGY_DETECTION_SCANNING
@@ -62,7 +70,7 @@ class Dot15d4Controller : public Controller {
 		void startAttack(Dot15d4Attack attack);
 		void sendJammingReport(uint32_t timestamp);
 
-		Dot15d4Packet* wazabeeDecoder(uint8_t *buffer, uint8_t size, uint32_t timestamp, CrcValue crcValue, uint8_t rssi);
+		bool wazabeeDecoder(uint8_t *buffer, uint8_t size, uint32_t timestamp, CrcValue crcValue, uint8_t rssi, Dot15d4DecodedPacket *decoded);
 
     void send(uint8_t* data, size_t size, bool raw);
 

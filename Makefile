@@ -3,10 +3,13 @@ TARGETS          := nrf52840_xxaa
 OUTPUT_DIRECTORY := build
 DIST_DIRECTORY 	 := dist
 NRFUTIL 		 := nrfutil
-SDK_ROOT		 := ../../.sdks/nRF5_SDK_17.1.0_ddde560/
 
 ifeq ($(PLATFORM),)
     PLATFORM = BOARD_PCA10059
+endif
+
+ifeq ($(origin SDK_ROOT), undefined)
+    SDK_ROOT := ../../.sdks/nRF5_SDK_17.1.0_ddde560/
 endif
 
 ifeq ($(SERIAL_PORT),)
@@ -57,6 +60,9 @@ ifeq ($(PLATFORM),BOARD_PCA10059)
 
 	SRC_FILES += $(SDK_ROOT)/components/libraries/timer/app_timer2.c
 	SRC_FILES += $(SDK_ROOT)/components/libraries/timer/drv_rtc.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/util/app_util_platform.c
+	SRC_FILES += $(SDK_ROOT)/components/drivers_nrf/nrf_soc_nosd/nrf_nvic.c
+	SRC_FILES += $(SDK_ROOT)/components/drivers_nrf/nrf_soc_nosd/nrf_soc.c
 endif
 
 ifeq ($(DUALMODE), "MASTER")
@@ -106,6 +112,9 @@ ifeq ($(PLATFORM),BOARD_MDK_DONGLE)
 	ASMFLAGS += -DSWI_DISABLE0
 
 	SRC_FILES += $(SDK_ROOT)/components/libraries/timer/app_timer.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/util/app_util_platform.c
+	SRC_FILES += $(SDK_ROOT)/components/drivers_nrf/nrf_soc_nosd/nrf_nvic.c
+	SRC_FILES += $(SDK_ROOT)/components/drivers_nrf/nrf_soc_nosd/nrf_soc.c
 endif
 
 ifeq ($(PLATFORM),BOARD_CLUE)
@@ -115,9 +124,23 @@ ifeq ($(PLATFORM),BOARD_CLUE)
 	CFLAGS += $(OPT)
 	CFLAGS += -DBOARD_CUSTOM
 	CFLAGS += -DBOARD_CLUE
+	CFLAGS += -include $(CONF_DIR)/sdk_config.h
+	CFLAGS += -DSOFTDEVICE_PRESENT
+	CFLAGS += -DS140
+	CFLAGS += -DNRF_SD_BLE_API_VERSION=6
+	CFLAGS += -DBLE_STACK_SUPPORT_REQD
+	CFLAGS += -DAPP_TIMER_V2
+	CFLAGS += -DAPP_TIMER_V2_RTC1_ENABLED
+	CFLAGS += -DCONFIG_NFCT_PINS_AS_GPIOS
+	CFLAGS += -DNRF_CRYPTO_MAX_INSTANCE_COUNT=1
 	CFLAGS += -DNRFX_SPIM_ENABLED=1
 	CFLAGS += -DNRFX_SPIM2_ENABLED=1
 	CFLAGS += -DNRFX_SPIM_MISO_PULL_CFG=1
+	CFLAGS += -DSPI_ENABLED=1
+	CFLAGS += -DSPI0_ENABLED=0
+	CFLAGS += -DSPI1_ENABLED=0
+	CFLAGS += -DSPI2_ENABLED=1
+	CFLAGS += -DSPI2_USE_EASY_DMA=1
 	CFLAGS += -DUSBD_POWER_DETECTION=false
 	CFLAGS += -DFLOAT_ABI_HARD
 	CFLAGS += -DNRF52840_XXAA
@@ -130,6 +153,7 @@ ifeq ($(PLATFORM),BOARD_CLUE)
 	CFLAGS += -fno-builtin -fshort-enums
 
 	CXXFLAGS += $(OPT)
+	CXXFLAGS += -Wno-register
 
 	ASMFLAGS += -g3
 	ASMFLAGS += -mcpu=cortex-m4
@@ -137,12 +161,126 @@ ifeq ($(PLATFORM),BOARD_CLUE)
 	ASMFLAGS += -mfloat-abi=hard -mfpu=fpv4-sp-d16
 	ASMFLAGS += -DBOARD_CUSTOM
 	ASMFLAGS += -DBOARD_CLUE
+	ASMFLAGS += -DSOFTDEVICE_PRESENT
+	ASMFLAGS += -DS140
+	ASMFLAGS += -DNRF_SD_BLE_API_VERSION=6
+	ASMFLAGS += -DBLE_STACK_SUPPORT_REQD
+	ASMFLAGS += -DAPP_TIMER_V2
+	ASMFLAGS += -DAPP_TIMER_V2_RTC1_ENABLED
+	ASMFLAGS += -DCONFIG_NFCT_PINS_AS_GPIOS
+	ASMFLAGS += -DNRF_CRYPTO_MAX_INSTANCE_COUNT=1
+	ASMFLAGS += -DSPI_ENABLED=1
+	ASMFLAGS += -DSPI0_ENABLED=0
+	ASMFLAGS += -DSPI1_ENABLED=0
+	ASMFLAGS += -DSPI2_ENABLED=1
+	ASMFLAGS += -DSPI2_USE_EASY_DMA=1
 	ASMFLAGS += -DFLOAT_ABI_HARD
 	ASMFLAGS += -DNRF52840_XXAA
 	ASMFLAGS += -DSWI_DISABLE0
 
-	SRC_FILES += $(SDK_ROOT)/components/libraries/timer/app_timer.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/timer/app_timer2.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/timer/drv_rtc.c
+	SRC_FILES += $(PROJ_DIR)/platformRuntime.c
 	SRC_FILES += $(PROJ_DIR)/display.cpp
+
+	SRC_FILES += $(SDK_ROOT)/components/softdevice/common/nrf_sdh.c
+	SRC_FILES += $(SDK_ROOT)/components/softdevice/common/nrf_sdh_ble.c
+	SRC_FILES += $(SDK_ROOT)/components/softdevice/common/nrf_sdh_soc.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/common/ble_advdata.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/ble_advertising/ble_advertising.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/common/ble_conn_params.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/common/ble_conn_state.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/ble_link_ctx_manager/ble_link_ctx_manager.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/common/ble_srv_common.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/ble_services/ble_hids/ble_hids.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/ble_services/ble_dis/ble_dis.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/nrf_ble_gatt/nrf_ble_gatt.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/auth_status_tracker.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/gatt_cache_manager.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/gatts_cache_manager.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/id_manager.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/nrf_ble_lesc.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/peer_data_storage.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/peer_database.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/peer_id.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/peer_manager.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/peer_manager_handler.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/pm_buffer.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/security_dispatcher.c
+	SRC_FILES += $(SDK_ROOT)/components/ble/peer_manager/security_manager.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/scheduler/app_scheduler.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/fds/fds.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/fstorage/nrf_fstorage.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/fstorage/nrf_fstorage_sd.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/experimental_section_vars/nrf_section_iter.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/atomic_flags/nrf_atflags.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crc16/crc16.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/nrf_crypto_ecc.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/nrf_crypto_ecdh.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/nrf_crypto_error.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/nrf_crypto_init.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/nrf_crypto_rng.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/nrf_crypto_shared.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/backend/cc310/cc310_backend_ecc.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/backend/cc310/cc310_backend_ecdh.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/backend/cc310/cc310_backend_init.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/backend/cc310/cc310_backend_mutex.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/backend/cc310/cc310_backend_rng.c
+	SRC_FILES += $(SDK_ROOT)/components/libraries/crypto/backend/cc310/cc310_backend_shared.c
+	SRC_FILES += $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_twim.c
+	SRC_FILES += $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_pdm.c
+	SRC_FILES += $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_pwm.c
+	SRC_FILES += $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_qspi.c
+	SRC_FILES += $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_saadc.c
+	SRC_FILES += $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_wdt.c
+	SRC_FILES += $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_rng.c
+	SRC_FILES += $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_rtc.c
+	SRC_FILES += $(PROJ_DIR)/pinRegistry.cpp
+	SRC_FILES += $(PROJ_DIR)/timebase.cpp
+	SRC_FILES += $(PROJ_DIR)/menu.cpp
+	SRC_FILES += $(PROJ_DIR)/runtime.cpp
+	SRC_FILES += $(PROJ_DIR)/boardModule.cpp
+	SRC_FILES += $(PROJ_DIR)/i2cBus.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/imu.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/mag.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/sht31d.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/bmp280.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/apds9960.cpp
+
+	SRC_FILES += $(PROJ_DIR)/motion/motion_eval.c
+	SRC_FILES += $(PROJ_DIR)/motion/fusion.cpp
+	SRC_FILES += $(PROJ_DIR)/motion/air_mouse.cpp
+	SRC_FILES += $(PROJ_DIR)/motion/tilt.cpp
+	SRC_FILES += $(PROJ_DIR)/motion/gesture.cpp
+	SRC_FILES += $(PROJ_DIR)/motion/rotation_gesture.cpp
+	SRC_FILES += $(PROJ_DIR)/motion/motion_manager.cpp
+
+	SRC_FILES += $(PROJ_DIR)/ble/ble_eval.c
+	SRC_FILES += $(PROJ_DIR)/ble/ble_runtime.cpp
+	SRC_FILES += $(PROJ_DIR)/ble/gatt.cpp
+	SRC_FILES += $(PROJ_DIR)/ble/advertising.cpp
+	SRC_FILES += $(PROJ_DIR)/ble/security.cpp
+	SRC_FILES += $(PROJ_DIR)/ble/hids_eval.c
+	SRC_FILES += $(PROJ_DIR)/ble/hids.cpp
+ 	SRC_FILES += $(PROJ_DIR)/ble/bond_eval.c
+ 	SRC_FILES += $(PROJ_DIR)/ble/bond.cpp
+
+ 	SRC_FILES += $(PROJ_DIR)/ble/profiles.cpp
+
+ 	SRC_FILES += $(PROJ_DIR)/storage/qspi.cpp
+ 	SRC_FILES += $(PROJ_DIR)/storage/qspi_journal.cpp
+ 	SRC_FILES += $(PROJ_DIR)/storage/calib.cpp
+
+ 	SRC_FILES += $(PROJ_DIR)/expert/gpio.cpp
+ 	SRC_FILES += $(PROJ_DIR)/expert/adc.cpp
+ 	SRC_FILES += $(PROJ_DIR)/expert/i2c.cpp
+ 	SRC_FILES += $(PROJ_DIR)/expert/spi.cpp
+
+ 	SRC_FILES += $(PROJ_DIR)/audio/pdm.cpp
+
+ 	SRC_FILES += $(PROJ_DIR)/output/buzzer.cpp
+
+  	LIB_FILES += $(SDK_ROOT)/external/nrf_cc310/lib/cortex-m4/hard-float/libnrf_cc310_0.9.13.a
 endif
 
 
@@ -171,7 +309,6 @@ SRC_FILES += \
 	$(SDK_ROOT)/components/libraries/usbd/app_usbd_core.c \
 	$(SDK_ROOT)/components/libraries/usbd/app_usbd_serial_num.c \
 	$(SDK_ROOT)/components/libraries/usbd/app_usbd_string_desc.c \
-	$(SDK_ROOT)/components/libraries/util/app_util_platform.c \
 	$(SDK_ROOT)/components/libraries/hardfault/nrf52/handler/hardfault_handler_gcc.c \
 	$(SDK_ROOT)/components/libraries/hardfault/hardfault_implementation.c \
 	$(SDK_ROOT)/components/libraries/util/nrf_assert.c \
@@ -193,8 +330,6 @@ SRC_FILES += \
 	$(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_uart.c \
 	$(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_spi.c \
 	$(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_spis.c \
-	$(SDK_ROOT)/components/drivers_nrf/nrf_soc_nosd/nrf_nvic.c \
-	$(SDK_ROOT)/components/drivers_nrf/nrf_soc_nosd/nrf_soc.c \
 	$(SDK_ROOT)/modules/nrfx/soc/nrfx_atomic.c \
 	$(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_clock.c \
 	$(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_gpiote.c \
@@ -219,6 +354,7 @@ SRC_FILES += \
 	$(PROJ_DIR)/radio.cpp \
 	$(PROJ_DIR)/controller.cpp \
 	$(PROJ_DIR)/packet.cpp \
+	$(PROJ_DIR)/messagePool.cpp \
 
 SRC_FILES += \
 	$(PROJ_DIR)/controllers/dot15d4controller.cpp \
@@ -279,7 +415,6 @@ INC_FOLDERS += \
 	$(SDK_ROOT)/components/libraries/delay \
 	$(SDK_ROOT)/external/segger_rtt \
 	$(SDK_ROOT)/components/libraries/atomic_fifo \
-	$(SDK_ROOT)/components/drivers_nrf/nrf_soc_nosd \
 	$(SDK_ROOT)/components/libraries/atomic \
 	$(SDK_ROOT)/components/boards \
 	$(SDK_ROOT)/components/libraries/memobj \
@@ -289,7 +424,46 @@ INC_FOLDERS += \
 	$(SDK_ROOT)/modules/nrfx/drivers/include \
 	$(SDK_ROOT)/modules/nrfx/hal \
 	$(SDK_ROOT)/external/fprintf \
-	$(SDK_ROOT)/components/libraries/log/src \
+	$(SDK_ROOT)/components/libraries/log/src
+
+ifeq ($(PLATFORM),BOARD_CLUE)
+INC_FOLDERS += \
+	$(PROJ_DIR)/ble \
+	$(SDK_ROOT)/components/softdevice/common \
+	$(SDK_ROOT)/components/softdevice/s140/headers \
+	$(SDK_ROOT)/components/softdevice/s140/headers/nrf52 \
+	$(SDK_ROOT)/components/libraries/svc \
+	$(SDK_ROOT)/components/libraries/fds \
+	$(SDK_ROOT)/components/libraries/fstorage \
+	$(SDK_ROOT)/components/libraries/crc16 \
+	$(SDK_ROOT)/components/libraries/atomic_flags \
+	$(SDK_ROOT)/components/libraries/crypto \
+	$(SDK_ROOT)/components/libraries/crypto/backend/cc310 \
+	$(SDK_ROOT)/components/libraries/crypto/backend/cc310_bl \
+	$(SDK_ROOT)/components/libraries/crypto/backend/cifra \
+	$(SDK_ROOT)/components/libraries/crypto/backend/mbedtls \
+	$(SDK_ROOT)/components/libraries/crypto/backend/micro_ecc \
+	$(SDK_ROOT)/components/libraries/crypto/backend/nrf_hw \
+	$(SDK_ROOT)/components/libraries/crypto/backend/nrf_sw \
+	$(SDK_ROOT)/components/libraries/crypto/backend/oberon \
+	$(SDK_ROOT)/components/libraries/crypto/backend/optiga \
+	$(SDK_ROOT)/components/libraries/stack_info \
+	$(SDK_ROOT)/external/mbedtls/include \
+	$(SDK_ROOT)/external/nrf_oberon/include \
+	$(SDK_ROOT)/external/nrf_cc310/include \
+	$(SDK_ROOT)/components/ble/common \
+	$(SDK_ROOT)/components/ble/ble_advertising \
+	$(SDK_ROOT)/components/ble/ble_link_ctx_manager \
+	$(SDK_ROOT)/components/ble/ble_services/ble_hids \
+	$(SDK_ROOT)/components/ble/ble_services/ble_dis \
+	$(SDK_ROOT)/components/ble/nrf_ble_gatt \
+	$(SDK_ROOT)/components/ble/peer_manager
+
+else
+INC_FOLDERS += \
+	$(SDK_ROOT)/components/drivers_nrf/nrf_soc_nosd
+
+endif
 
 # WHAD Lib
 INC_FOLDERS += \
@@ -301,6 +475,7 @@ INC_FOLDERS += \
 	$(WHAD_DIR)/whad/protocol/ble \
 	$(WHAD_DIR)/whad/protocol/dot15d4 \
 	$(WHAD_DIR)/whad/protocol/esb \
+	$(WHAD_DIR)/whad/protocol/board \
 	$(WHAD_DIR)/whad/protocol/phy \
 
 
@@ -319,8 +494,16 @@ LDFLAGS += -mcpu=cortex-m4
 LDFLAGS += -mfloat-abi=hard -mfpu=fpv4-sp-d16
 # let linker dump unused sections
 LDFLAGS += -Wl,--gc-sections
+# emit linker map at $(OUTPUT_DIRECTORY)/nrf52840_xxaa.map and print
+# FLASH/RAM usage to stderr (captured into size_report.txt post-link).
+# Note: Makefile.common also adds -Wl,-Map=$(@:.out=.map); the duplicate
+# is harmless (ld takes the last -Map) and kept here as documentation.
+LDFLAGS += -Wl,-Map=$(OUTPUT_DIRECTORY)/nrf52840_xxaa.map
+LDFLAGS += -Wl,--print-memory-usage
 # use newlib in nano version
 LDFLAGS += --specs=nano.specs
+# provide stubs for newlib syscalls (_kill, _read, _write, _lseek)
+LDFLAGS += --specs=nosys.specs
 
 nrf52840_xxaa: CFLAGS += -D__HEAP_SIZE=8192
 nrf52840_xxaa: CFLAGS += -D__STACK_SIZE=8192
@@ -351,7 +534,7 @@ endif
 ifeq ($(PLATFORM),BOARD_CLUE)
 	mkdir -p $(DIST_DIRECTORY)
 	cp $(OUTPUT_DIRECTORY)/nrf52840_xxaa.hex $(DIST_DIRECTORY)/butterfly-clue.hex
-	python3 $(CONF_DIR)/uf2conv.py $(DIST_DIRECTORY)/butterfly-clue.hex -c -f 0x239a0029 -o $(DIST_DIRECTORY)/butterfly-clue-fwupgrade.uf2
+	python3 $(CONF_DIR)/uf2conv.py $(DIST_DIRECTORY)/butterfly-clue.hex -c -f 0xADA52840 -o $(DIST_DIRECTORY)/butterfly-clue-fwupgrade.uf2
 endif
 # Print all targets that can be built
 help:
@@ -366,6 +549,39 @@ TEMPLATE_PATH := $(SDK_ROOT)/components/toolchain/gcc
 include $(TEMPLATE_PATH)/Makefile.common
 
 $(foreach target, $(TARGETS), $(call define_target, $(target)))
+
+# ---- CLUE post-link: size_report.txt, budget enforcement, single-tap magic ----
+# Runs after the SDK's link+objcopy steps produce .out/.hex/.bin. Captures the
+# Berkeley size breakdown, refuses images that overflow the CLUE FLASH/RAM
+# budgets, and rejects images that accidentally carry the bootloader
+# single-tap-bypass magic at flash 0x26200.
+ifeq ($(PLATFORM),BOARD_CLUE)
+CLUE_FLASH_BUDGET_BYTES := 533299
+CLUE_RAM_BUDGET_BYTES   := 118784
+
+.PHONY: clue_post_link_check
+clue_post_link_check: $(OUTPUT_DIRECTORY)/nrf52840_xxaa.hex
+	@echo "CLUE: writing size_report.txt"
+	@$(SIZE) $(OUTPUT_DIRECTORY)/nrf52840_xxaa.out > $(OUTPUT_DIRECTORY)/size_report.txt
+	@bash $(CONF_DIR)/check_singletap.sh $(OUTPUT_DIRECTORY)/nrf52840_xxaa.hex
+	@awk -v fb=$(CLUE_FLASH_BUDGET_BYTES) -v rb=$(CLUE_RAM_BUDGET_BYTES) '\
+		NR==2 {\
+			flash=$$1+$$2;\
+			ram=$$2+$$3;\
+			print "CLUE size: flash=" flash "/" fb " bytes, RAM=" ram "/" rb " bytes";\
+			if (flash > fb) {\
+				print "FAIL: CLUE flash " flash " exceeds budget " fb " bytes" > "/dev/stderr";\
+				exit 1;\
+			}\
+			if (ram > rb) {\
+				print "FAIL: CLUE RAM " ram " exceeds budget " rb " bytes" > "/dev/stderr";\
+				exit 1;\
+			}\
+			exit 0;\
+		}' $(OUTPUT_DIRECTORY)/size_report.txt
+
+nrf52840_xxaa: clue_post_link_check
+endif
 
 .PHONY: flash erase
 

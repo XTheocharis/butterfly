@@ -182,13 +182,10 @@ bool ESBController::goToNextChannel() {
 
 void ESBController::sendJammingReport(uint32_t timestamp) {
     /* Build an ESB Jammed notification. */
-    whad::NanoPbMsg *notification = new whad::esb::Jammed(timestamp);
+    whad::esb::Jammed notification(timestamp);
 
     /* Push notification into our message queue. */
-    Core::instance->pushMessageToQueue(notification);
-
-    /* Free notification wrapper. */
-    delete notification;
+    Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, timestamp);
 }
 
 void ESBController::startAttack(ESBAttack attack) {
@@ -450,7 +447,7 @@ bool ESBController::send(uint8_t *data, size_t size, int retransmission_count) {
     return false;
 }
 
-ESBPacket* ESBController::buildPseudoPacketFromPayload(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi) {
+void ESBController::addPseudoPacketFromPayload(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi) {
     uint8_t totalSize = 5+2+2+size-2+1;
     uint8_t packet[totalSize];
     memset(packet,0x00,totalSize);
@@ -468,7 +465,10 @@ ESBPacket* ESBController::buildPseudoPacketFromPayload(uint32_t timestamp, uint8
     packet[6+size-2] |= (crc[0] >> 1);
     packet[6+size-2+1] = (crc[0] << 7) | (crc[1] >> 1);
     packet[6+size-2+2] = (crc[1] << 7);
-    return new ESBPacket(packet,totalSize, timestamp, 0x00, this->channel, rssi, crcValue, this->unifying);
+    ESBPacket pkt(packet,totalSize, timestamp, 0x00, this->channel, rssi, crcValue, this->unifying);
+    if (pkt.isValid()) {
+      this->addPacket(&pkt);
+    }
 }
 
 
@@ -490,8 +490,7 @@ void ESBController::sendAck(uint8_t pid) {
 
 void ESBController::onPromiscuousPacketProcessing(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi) {
     // Extract any valid ESB packet from bitstream
-    ESBPacket *pkt = NULL;
-    ESBPacket *croppedPkt = NULL;
+    bool found = false;
     for (uint8_t bitshift=0; bitshift<8; bitshift++) {
       shift_buffer(buffer, 60);
       for (uint8_t byteshift=1; byteshift < (60 - 32); byteshift++) {
@@ -499,17 +498,18 @@ void ESBController::onPromiscuousPacketProcessing(uint32_t timestamp, uint8_t si
 
         uint8_t* check_ptr = (buffer+byteshift-1);
         if (check_ptr[0] == 0xAA || check_ptr[0] == 0x55) {
-            pkt = new ESBPacket(candidate,size,timestamp,0x00,this->channel,rssi,crcValue, this->unifying);
-            if (pkt->getSize() < 32 && pkt->checkCrc()) {
-              croppedPkt = new ESBPacket(candidate,pkt->getSize()+5+2+2,timestamp,0x00,this->channel,rssi,crcValue,this->unifying);
-              this->addPacket(croppedPkt);
-              delete croppedPkt;
+            ESBPacket pkt(candidate,size,timestamp,0x00,this->channel,rssi,crcValue, this->unifying);
+            if (pkt.isValid() && pkt.getSize() < 32 && pkt.checkCrc()) {
+              ESBPacket croppedPkt(candidate,pkt.getSize()+5+2+2,timestamp,0x00,this->channel,rssi,crcValue,this->unifying);
+              if (croppedPkt.isValid()) {
+                this->addPacket(&croppedPkt);
+              }
+              found = true;
               break;
             }
-            delete pkt;
           }
       }
-      if (croppedPkt != NULL) break;
+      if (found) break;
     }
 }
 
@@ -546,9 +546,7 @@ void ESBController::onPRXPacketProcessing(uint32_t timestamp, uint8_t size, uint
     ownAck = true;
   }
   if (this->showAcknowledgements || (ownAck && this->filter.bytes[0] != 0xBB && this->filter.bytes[1] != 0x0A && this->filter.bytes[2] != 0xDC && this->filter.bytes[3] !=  0xA5 && this->filter.bytes[4] != 0x75)) {
-    ESBPacket *pkt = this->buildPseudoPacketFromPayload(timestamp, size,buffer,crcValue, rssi);
-    this->addPacket(pkt);
-    delete pkt;
+    this->addPseudoPacketFromPayload(timestamp, size,buffer,crcValue, rssi);
   }
 
 }
@@ -586,13 +584,11 @@ void ESBController::onPTXPacketProcessing(uint32_t timestamp, uint8_t size, uint
   //retransmission=false;
   // If the packet is not a retransmission, we update lastReceivedPacket and transmit pkt to the host
   if (!retransmission) {
-    ESBPacket *pkt = this->buildPseudoPacketFromPayload(timestamp, size,buffer,crcValue, rssi);
     memcpy(this->lastReceivedPacket.buffer, buffer, size);
     this->lastReceivedPacket.timestamp = timestamp;
     this->lastReceivedPacket.size = size;
-    this->addPacket(pkt);
+    this->addPseudoPacketFromPayload(timestamp, size,buffer,crcValue, rssi);
     this->lastReceivedPacket.acked = false;
-    delete pkt;
   }
   else {
     // It is a retransmission, but we have to update the timestamp of the last received packet structure to make sure we detect a lately ack

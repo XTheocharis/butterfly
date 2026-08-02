@@ -3,11 +3,13 @@
 
 #include "pb.h"
 #include "whad.pb.h"
+#include <stdint.h>
 
 typedef struct MessageQueueElement MessageQueueElement;
 typedef struct MessageQueueElement {
 	Message *message;
 	MessageQueueElement *nextElement;
+	uint32_t sourceTimestamp;
 } MessageQueueElement;
 
 typedef struct MessageQueue {

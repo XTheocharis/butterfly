@@ -2,8 +2,8 @@
 #include "capabilities.h"
 #include <whad.h>
 #include "nrf.h"
-#include "nrf_delay.h"
 #include "nrf_gpio.h"
+#include "messagePool.h"
 
 // Global instance of Core
 Core* Core::instance = NULL;
@@ -24,6 +24,25 @@ void Core::processInputMessage(Message msg) {
 
     case whad::MessageType::DomainMsg:
     {
+#ifdef BOARD_CLUE
+        /* Board domain is always available on CLUE regardless of
+         * runtime mode — it does not depend on raw radio. */
+        if (whadMsg.getDomain() == whad::MessageDomain::DomainBoard) {
+            whad::board::BoardMsg boardMsg(whadMsg);
+            this->boardModule->processMessage(boardMsg);
+            break;
+        }
+#endif
+
+        /* BLE-HID runtime does not serve radio domains — reject
+         * before touching raw controller paths. Board domain
+         * routing is handled by BoardModule (Todo 14). */
+        if (!this->hasRawRadio()) {
+            whad::generic::UnsupportedDomain err;
+            this->pushMessageToQueue(&err);
+            break;
+        }
+
         switch (whadMsg.getDomain())
         {
             case whad::MessageDomain::DomainBle:
@@ -62,18 +81,32 @@ void Core::processGenericInputMessage(whad::NanoPbMsg msg) {
 }
 
 void Core::processDiscoveryInputMessage(whad::discovery::DiscoveryMsg msg) {
-    whad::NanoPbMsg *response = NULL;
+
+
+#ifdef BOARD_CLUE
+    const whad_domain_desc_t *activeCaps =
+        getRuntimeCapabilities(m_runtimeMode);
+#else
+    const whad_domain_desc_t *activeCaps =
+        (const whad_domain_desc_t *)CAPABILITIES;
+#endif
 
     switch (msg.getType())
     {
         /* Device reset message processing. */
         case whad::discovery::MessageType::DeviceResetMsg:
             {
-                this->radio->disable();
+                /* Raw-WHAD: stop radio and clear controller.
+                 * BLE-HID: reset transport/Board state without
+                 * touching RADIO — BLE owns the radio path. */
+                if (this->hasRawRadio()) {
+                    this->radio->disable();
+                    this->radio->setController(NULL);
+                }
                 this->currentController = NULL;
-                this->radio->setController(NULL);
 
-                response = new whad::discovery::ReadyResp();
+                whad::discovery::ReadyResp resp;
+                this->pushMessageToQueue(&resp);
             }
             break;
 
@@ -89,7 +122,7 @@ void Core::processDiscoveryInputMessage(whad::discovery::DiscoveryMsg msg) {
                     memcpy(&deviceId[0], (const void *)NRF_FICR->DEVICEID, 8);
                     memcpy(&deviceId[8], (const void *)NRF_FICR->DEVICEADDR, 8);
 
-                    response = new whad::discovery::DeviceInfoResp(
+                    whad::discovery::DeviceInfoResp resp(
                         whad::discovery::Butterfly,
                         deviceId,
                         WHAD_MIN_VERSION,
@@ -99,12 +132,13 @@ void Core::processDiscoveryInputMessage(whad::discovery::DiscoveryMsg msg) {
                         VERSION_MAJOR,
                         VERSION_MINOR,
                         VERSION_REVISION,
-                        (whad_domain_desc_t *)CAPABILITIES
+                        (whad_domain_desc_t *)activeCaps
                     );
+                    this->pushMessageToQueue(&resp);
                 }
                 else
                 {
-                    response = new whad::generic::Error();
+                    { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
             break;
@@ -115,33 +149,29 @@ void Core::processDiscoveryInputMessage(whad::discovery::DiscoveryMsg msg) {
                 whad::discovery::DomainInfoQuery query(msg);
                 whad::discovery::Domains domain = query.getDomain();
 
-                if (whad::discovery::isDomainSupported(CAPABILITIES, domain))
+                if (whad::discovery::isDomainSupported(activeCaps, domain))
                 {
-                    response = new whad::discovery::DomainInfoResp(
+                    whad::discovery::DomainInfoResp resp(
                         (whad::discovery::Domains)domain,
-                        (whad_domain_desc_t *)CAPABILITIES
+                        (whad_domain_desc_t *)activeCaps
                     );
+                    this->pushMessageToQueue(&resp);
                 }
                 else {
-                    response = new whad::generic::UnsupportedDomain();
+                    { whad::generic::UnsupportedDomain _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
             break;
 
         default:
-            response = new whad::generic::Error();
+            { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
             break;
     }
 
-    /* Push our response message into the TX queue. */
-    this->pushMessageToQueue(response);
-
-    /* Free our message wrapper. */
-    delete response;
 }
 
 void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
-    whad::NanoPbMsg *response = NULL;
+
 
     if (this->currentController != this->dot15d4Controller) {
         this->selectController(DOT15D4_PROTOCOL);
@@ -158,10 +188,10 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
                 this->dot15d4Controller->setChannel(channel);
                 this->dot15d4Controller->enterReceptionMode();
                 this->dot15d4Controller->setAutoAcknowledgement(false);
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -174,10 +204,10 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
             if (channel >= 11 && channel <= 26) {
                 this->dot15d4Controller->setChannel(channel);
                 this->dot15d4Controller->enterEDScanMode();
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -185,7 +215,7 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
         case whad::dot15d4::StartMsg:
         {
             this->currentController->start();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -198,10 +228,10 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
                 this->dot15d4Controller->setChannel(channel);
                 this->dot15d4Controller->enterReceptionMode();
                 this->dot15d4Controller->setAutoAcknowledgement(true);
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -216,10 +246,10 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
                 this->dot15d4Controller->setChannel(channel);
                 this->dot15d4Controller->enterReceptionMode();
                 this->dot15d4Controller->setAutoAcknowledgement(true);
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -234,10 +264,10 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
                 this->dot15d4Controller->setChannel(channel);
                 this->dot15d4Controller->enterReceptionMode();
                 this->dot15d4Controller->setAutoAcknowledgement(true);
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -249,13 +279,13 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
             if (query.getAddressType() == whad::dot15d4::AddressShort) {
                 uint16_t shortAddress = query.getAddress() & 0xFFFF;
                 this->dot15d4Controller->setShortAddress(shortAddress);
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
 
             }
             else {
                 uint64_t extendedAddress = query.getAddress();
                 this->dot15d4Controller->setExtendedAddress(extendedAddress);
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -264,7 +294,7 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
         case whad::dot15d4::StopMsg:
         {
             this->currentController->stop();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -279,19 +309,22 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
                 /* Set channel. */
                 this->dot15d4Controller->setChannel(channel);
 
-                /* Build packet. */
-                size_t size = query.getPdu().getSize();
-                uint8_t *packet = (uint8_t*)malloc(1 + size);
-                packet[0] = size;
-                memcpy(packet+1,query.getPdu().getBytes(), size);
-                this->dot15d4Controller->send(packet, size+1, false);
-                free(packet);
+				/* Build packet. */
+				size_t size = query.getPdu().getSize();
+				uint8_t packet[MESSAGE_POOL_PACKET_SLOT_SIZE];
+				if ((1 + size) > sizeof(packet)) {
+					{ whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
+					break;
+				}
+				packet[0] = size;
+				memcpy(packet+1,query.getPdu().getBytes(), size);
+				this->dot15d4Controller->send(packet, size+1, false);
 
                 /* Success. */
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -308,38 +341,36 @@ void Core::processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg) {
                 /* Set channel. */
                 this->dot15d4Controller->setChannel(channel);
 
-                /* Build packet. */
-                size_t size = query.getPdu().getSize();
-                uint8_t *packet = (uint8_t*)malloc(3 + size);
-                packet[0] = size+2;
-                memcpy(packet+1, query.getPdu().getBytes(), size);
-                memcpy(packet+1+size, &fcs, 2);
-                this->dot15d4Controller->send(packet, size+3, true);
-                free(packet);
+				/* Build packet. */
+				size_t size = query.getPdu().getSize();
+				uint8_t packet[MESSAGE_POOL_PACKET_SLOT_SIZE];
+				if ((3 + size) > sizeof(packet)) {
+					{ whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
+					break;
+				}
+				packet[0] = size+2;
+				memcpy(packet+1, query.getPdu().getBytes(), size);
+				memcpy(packet+1+size, &fcs, 2);
+				this->dot15d4Controller->send(packet, size+3, true);
 
                 /* Success. */
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
 
         default:
-            response = new whad::generic::Error();
+            { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
             break;
     }
 
-    /* Push our response message into the TX queue. */
-    this->pushMessageToQueue(response);
-
-    /* Free our message wrapper. */
-    delete response;
 }
 
 void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
-    whad::NanoPbMsg *response = NULL;
+
 
     if (this->currentController != this->bleController) {
         this->selectController(BLE_PROTOCOL);
@@ -365,7 +396,7 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
             );
             this->bleController->setFollowMode(false);
             this->bleController->sniff();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -375,7 +406,7 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
 
             this->bleController->setChannel(query.getChannel());
             this->bleController->setReactiveJammerConfiguration(query.getPattern(), query.getPatternLength(), query.getPosition());
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -398,7 +429,7 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
             );
             this->bleController->setFollowMode(true);
             this->bleController->sniff();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -408,7 +439,7 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
             this->bleController->setChannel(0);
             this->bleController->setMonitoredChannels(query.getChannelMap().getChannelMapBuf());
             this->bleController->sniffAccessAddresses();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -436,21 +467,21 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                 this->bleController->attachToExistingConnection(query.getAccessAddress(), query.getCrcInit(), query.getChannelMap().getChannelMapBuf(), query.getHopInterval(), query.getHopIncrement());
             }
 
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
         case whad::ble::StartMsg:
         {
             this->bleController->start();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
         case whad::ble::StopMsg:
         {
             this->bleController->stop();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -459,7 +490,7 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
             whad::ble::ScanMode query(bleMsg);
 
             this->bleController->startScanning(query.isActiveModeEnabled());
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -475,10 +506,10 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                      if (this->bleController->getState() == SNIFFING_CONNECTION) {
                         this->bleController->setAttackPayload(query.getPdu().getBytes(), query.getPdu().getSize());
                         this->bleController->startAttack(BLE_ATTACK_FRAME_INJECTION_TO_SLAVE);
-                        response = new whad::generic::Success();
+                        { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                     }
                     else {
-                        response = new whad::generic::WrongMode();
+                        { whad::generic::WrongMode _resp; this->pushMessageToQueue(&_resp); }
                     }
                 }
                 break;
@@ -488,10 +519,10 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                     if (this->bleController->getState() == SNIFFING_CONNECTION) {
                         this->bleController->setAttackPayload(query.getPdu().getBytes(), query.getPdu().getSize());
                             this->bleController->startAttack(BLE_ATTACK_FRAME_INJECTION_TO_MASTER);
-                        response = new whad::generic::Success();
+                        { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                     }
                     else {
-                        response = new whad::generic::WrongMode();
+                        { whad::generic::WrongMode _resp; this->pushMessageToQueue(&_resp); }
                     }
                 }
                 break;
@@ -502,14 +533,14 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                         this->bleController->setMasterPayload(query.getPdu().getBytes(), query.getPdu().getSize());
                         while (max_retry>0 && !this->bleController->isMasterPayloadTransmitted()) {--max_retry;}
                         if (max_retry != 0) {
-                            response = new whad::generic::Success();
+                            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                         } else {
-                            response = new whad::generic::Error();
+                            { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
 
                         }
                     }
                     else {
-                        response = new whad::generic::WrongMode();
+                        { whad::generic::WrongMode _resp; this->pushMessageToQueue(&_resp); }
                     }
                 }
                 break;
@@ -520,10 +551,10 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
 
                         this->bleController->setSlavePayload(query.getPdu().getBytes(), query.getPdu().getSize());
                         while (!this->bleController->isSlavePayloadTransmitted()) {}
-                        response = new whad::generic::Success();
+                        { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                     }
                     else {
-                        response = new whad::generic::WrongMode();
+                        { whad::generic::WrongMode _resp; this->pushMessageToQueue(&_resp); }
                     }
                 }
                 break;
@@ -537,17 +568,17 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                       query.getConnHandle(),
                       query.getAccessAddress()
                     )) {
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                   }
                   else {
-                      response = new whad::generic::Error();
+                      { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
                   }
                   break;
 
                 }
                 default:
                 {
-                    response = new whad::generic::ParameterError();
+                    { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
                 }
                 break;
             }
@@ -557,28 +588,28 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
         case whad::ble::HijackMasterMsg:
         {
             this->bleController->startAttack(BLE_ATTACK_MASTER_HIJACKING);
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
         case whad::ble::HijackSlaveMsg:
         {
             this->bleController->startAttack(BLE_ATTACK_SLAVE_HIJACKING);
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
         case whad::ble::HijackBothMsg:
         {
             this->bleController->startAttack(BLE_ATTACK_MITM);
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
         case whad::ble::CentralModeMsg:
         {
             //if (this->bleController->getState() == CONNECTION_INITIATION || this->bleController->getState() == SIMULATING_MASTER || this->bleController->getState() == PERFORMING_MITM) {
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             /*}
             else {
                 response = Whad::buildResultMessage(generic_ResultCode_WRONG_MODE);
@@ -591,14 +622,14 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
             whad::ble::PeripheralMode query(bleMsg);
 
             if (this->bleController->getState() == SIMULATING_SLAVE || this->bleController->getState() == PERFORMING_MITM) {
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
                 /* Make sure we have at least some data to advertise. */
                 if (query.getAdvDataLength() == 0)
                 {
                     /* Parameter error ! */
-                    response = new whad::generic::ParameterError();
+                    { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
                 }
                 else
                 {
@@ -613,7 +644,7 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                     this->bleController->start();
 
                     /* Success. */
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
         }
@@ -687,14 +718,14 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                 channelMap
             );
 
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
         case whad::ble::DisconnectMsg:
         {
             this->bleController->disconnect();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -732,7 +763,7 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                     }
 
                     /* Success. */
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
                 break;
 
@@ -759,13 +790,13 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                     }
 
                     /* Success. */
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
                 break;
 
                 case whad::ble::SequencePattern:
                 {
-                    response = new whad::generic::WrongMode();
+                    { whad::generic::WrongMode _resp; this->pushMessageToQueue(&_resp); }
                 }
                 break;
             }
@@ -778,10 +809,10 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
 
             uint8_t id = query.getId();
             if (this->bleController->checkManualTriggers(id)) {
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::Error();
+                { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -800,7 +831,7 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                 bd_address[0]
             };
             this->bleController->setOwnAddress(address, false);
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -810,10 +841,10 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
 
             uint8_t id = query.getId();
             if (this->bleController->deleteSequence(id)) {
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-            response = new whad::generic::ParameterError();
+            { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -829,18 +860,18 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
                     0
                 );
                 if (this->bleController->startEncryption()) {
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
                 else {
-                    response = new whad::generic::Error();
+                    { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
             else {
                 if (this->bleController->stopEncryption()) {
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
                 else {
-                    response = new whad::generic::Error();
+                    { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
         }
@@ -848,21 +879,16 @@ void Core::processBLEInputMessage(whad::ble::BleMsg bleMsg) {
 
         default:
         {
-            response = new whad::generic::Error();
+            { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
     }
 
-    /* Push our response message into the TX queue. */
-    this->pushMessageToQueue(response);
-
-    /* Free our message wrapper. */
-    delete response;
 }
 
 
 void Core::processESBInputMessage(whad::esb::EsbMsg esbMsg) {
-    whad::NanoPbMsg *response = NULL;
+
     uint8_t address[5];
     uint8_t addressLen = 0;
 
@@ -914,17 +940,17 @@ void Core::processESBInputMessage(whad::esb::EsbMsg esbMsg) {
                     }
 
                     /* Success ! */
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
                 else
                 {
                     /* Parameter error (wrong address size). */
-                    response = new whad::generic::ParameterError();
+                    { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
             else {
                 /* Parameter error (Invalid channel value). */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -936,7 +962,7 @@ void Core::processESBInputMessage(whad::esb::EsbMsg esbMsg) {
             this->esbController->start();
 
             /* Success. */
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -947,7 +973,7 @@ void Core::processESBInputMessage(whad::esb::EsbMsg esbMsg) {
             this->esbController->stop();
 
             /* Success. */
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -966,17 +992,17 @@ void Core::processESBInputMessage(whad::esb::EsbMsg esbMsg) {
             {
                 if (this->esbController->send(query.getPacket().getBytes(), query.getPacket().getSize(), query.getRetrCount())) {
                     /* Success. */
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
                 else {
                     /* Error while sending packet. */
-                    response = new whad::generic::Error();
+                    { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
             else
             {
                 /* Error while sending packet, we can't send nothing. */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1006,12 +1032,12 @@ void Core::processESBInputMessage(whad::esb::EsbMsg esbMsg) {
                 );
 
                 /* Success. */
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else
             {
                 /* Parameter error (invalid address size). */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1028,7 +1054,7 @@ void Core::processESBInputMessage(whad::esb::EsbMsg esbMsg) {
             this->esbController->enableAcknowledgementsTransmission();
 
             /* Success. */
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -1044,7 +1070,7 @@ void Core::processESBInputMessage(whad::esb::EsbMsg esbMsg) {
             this->esbController->disableAcknowledgementsTransmission();
 
             /* Success. */
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -1052,21 +1078,16 @@ void Core::processESBInputMessage(whad::esb::EsbMsg esbMsg) {
         default:
         {
             /* Error (unknown message). */
-            response = new whad::generic::Error();
+            { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
     }
 
-    /* Push our response message into the TX queue. */
-    this->pushMessageToQueue(response);
-
-    /* Free our message wrapper. */
-    delete response;
 }
 
 void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
-    whad::NanoPbMsg *response = NULL;
+
     uint8_t address[5];
     uint8_t addressLen = 0;
 
@@ -1116,18 +1137,18 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
                     }
 
                     /* Success. */
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
                 else
                 {
                     /* Parameter error (invalid address size). */
-                    response = new whad::generic::ParameterError();
+                    { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
             else
             {
                 /* Parameter error (invalid channel). */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1139,7 +1160,7 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
             this->esbController->start();
 
             /* Success. */
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -1150,7 +1171,7 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
             this->esbController->stop();
 
             /* Success. */
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -1171,18 +1192,18 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
                 if (this->esbController->send(query.getPdu().getBytes(), query.getPdu().getSize(), query.getRetrCounter()))
                 {
                     /* Success. */
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
                 else
                 {
                     /* Error while sending packet. */
-                    response = new whad::generic::Error();
+                    { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
             else
             {
                 /* Parameter error (invalid channel). */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1210,12 +1231,12 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
                 );
 
                 /* Success. */
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else
             {
                 /* Parameter error (invalid address size). */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1236,12 +1257,12 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
                 this->esbController->enableAcknowledgementsTransmission();
 
                 /* Success. */
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else
             {
                 /* Parametter error (invalid channel). */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1262,12 +1283,12 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
                 this->esbController->disableAcknowledgementsTransmission();
 
                 /* Success. */
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else
             {
                 /* Parametter error (invalid channel). */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1288,12 +1309,12 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
                 this->esbController->disableAcknowledgementsTransmission();
 
                 /* Success. */
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else
             {
                 /* Parametter error (invalid channel). */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1309,7 +1330,7 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
             this->esbController->setChannel(5);
 
             /* Success. */
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -1318,20 +1339,15 @@ void Core::processUnifyingInputMessage(whad::unifying::UnifyingMsg uniMsg) {
         default:
         {
             /* Unkown message error. */
-            response = new whad::generic::Error();
+            { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
     }
 
-    /* Push our response message into the TX queue. */
-    this->pushMessageToQueue(response);
-
-    /* Free our message wrapper. */
-    delete response;
 }
 
 void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
-    whad::NanoPbMsg *response = NULL;
+
 
     if (this->currentController != this->genericController) {
     this->selectController(GENERIC_PROTOCOL);
@@ -1348,13 +1364,13 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
                 case 170000:
                     {
                         this->genericController->setPhy(GENERIC_PHY_1MBPS_ESB);
-                        response = new whad::generic::Success();
+                        { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                     }
                     break;
 
                 case 250000:
                     {
-                        response = new whad::generic::Success();
+                        { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                         this->genericController->setPhy(GENERIC_PHY_1MBPS_BLE);
                     }
                     break;
@@ -1362,20 +1378,20 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
                 case 320000:
                     {
                         this->genericController->setPhy(GENERIC_PHY_2MBPS_ESB);
-                        response = new whad::generic::Success();
+                        { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                     }
                     break;
 
                 case 500000:
                     {
                         this->genericController->setPhy(GENERIC_PHY_2MBPS_BLE);
-                        response = new whad::generic::Success();
+                        { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                     }
                     break;
 
                 default:
                     /* Error, deviation is not supported. */
-                    response = new whad::generic::ParameterError();
+                    { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
                     break;
 
             }
@@ -1387,13 +1403,14 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
             whad::phy::SendPacket query(msg);
             whad::phy::Packet packet = query.getPacket();
             this->genericController->send(packet.getBytes(), packet.getSize());
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
         case whad::phy::GetSupportedFreqsMsg:
         {
-            response = new whad::phy::SupportedFreqsResp(SUPPORTED_FREQUENCY_RANGES);
+            whad::phy::SupportedFreqsResp resp(SUPPORTED_FREQUENCY_RANGES);
+            this->pushMessageToQueue(&resp);
         }
         break;
 
@@ -1405,10 +1422,10 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
             if (frequency >= 2400000000L && frequency <= 2500000000L) {
                 int frequency_offset = (frequency / 1000000) - 2400;
                 this->genericController->setChannel(frequency_offset);
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1426,17 +1443,17 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
                             this->genericController->getPhy() == GENERIC_PHY_2MBPS_ESB
                         ) {
                             this->genericController->setPhy(GENERIC_PHY_1MBPS_ESB);
-                            response = new whad::generic::Success();
+                            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                         }
                         else if (
                             this->genericController->getPhy() == GENERIC_PHY_1MBPS_BLE ||
                             this->genericController->getPhy() == GENERIC_PHY_2MBPS_BLE
                         ) {
                             this->genericController->setPhy(GENERIC_PHY_1MBPS_BLE);
-                            response = new whad::generic::Success();
+                            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                         }
                         else {
-                            response = new whad::generic::Error();
+                            { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
                         }
                     }
                     break;
@@ -1448,23 +1465,23 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
                             this->genericController->getPhy() == GENERIC_PHY_2MBPS_ESB
                         ) {
                             this->genericController->setPhy(GENERIC_PHY_2MBPS_ESB);
-                            response = new whad::generic::Success();
+                            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                         }
                         else if (
                             this->genericController->getPhy() == GENERIC_PHY_1MBPS_BLE ||
                             this->genericController->getPhy() == GENERIC_PHY_2MBPS_BLE
                         ) {
                             this->genericController->setPhy(GENERIC_PHY_2MBPS_BLE);
-                            response = new whad::generic::Success();
+                            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                         }
                         else {
-                            response = new whad::generic::Error();
+                            { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
                         }
                     }
                     break;
 
                 default:
-                    response = new whad::generic::ParameterError();
+                    { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
                     break;
             }
         }
@@ -1479,7 +1496,7 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
             else {
                 this->genericController->setEndianness(GENERIC_ENDIANNESS_LITTLE);
             }
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -1496,7 +1513,7 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
             else {
                 this->genericController->setTxPower(HIGH);
             }
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
@@ -1524,14 +1541,14 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
             if (query.getSize() + this->genericController->getPreambleSize()  <= 255) {
                 /* Supplied size is correct, update packet size and return a success message. */
                 this->genericController->setPacketSize(query.getSize());
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
                 /* Update packet size to its maximum value, based on current synchronization word. */
                 this->genericController->setPacketSize(255 - this->genericController->getPreambleSize());
 
                 /* Notify host something went wrong because of an invalid supplied parameter. */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1560,18 +1577,18 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
 
 
                     /* Notify host that something went wrong. */
-                    response = new whad::generic::ParameterError();
+                    { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
                 }
                 else
                 {
                     /* Everything is good, return success. */
-                    response = new whad::generic::Success();
+                    { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
                 }
             }
             else
             {
                 /* Supplied synchronization word is too long. */
-                response = new whad::generic::ParameterError();
+                { whad::generic::ParameterError _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1581,10 +1598,10 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
             whad::phy::SniffMode query(msg);
 
             if (query.isIqModeEnabled()) {
-                response = new whad::generic::Error();
+                { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
             }
             else {
-                response = new whad::generic::Success();
+                { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
             }
         }
         break;
@@ -1592,29 +1609,24 @@ void Core::processPhyInputMessage(whad::phy::PhyMsg msg) {
         case whad::phy::StartMsg:
         {
             this->genericController->start();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
         case whad::phy::StopMsg:
         {
             this->genericController->stop();
-            response = new whad::generic::Success();
+            { whad::generic::Success _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
 
         default:
         {
-            response = new whad::generic::Error();
+            { whad::generic::Error _resp; this->pushMessageToQueue(&_resp); }
         }
         break;
     }
 
-    /* Push our response message into the TX queue. */
-    this->pushMessageToQueue(response);
-
-    /* Free our message wrapper. */
-    delete response;
 }
 
 #ifdef PA_ENABLED
@@ -1652,14 +1664,47 @@ void core_send_bytes(uint8_t *p_bytes, int size)
     }
 }
 
-Core::Core() {
+Core::Core(runtime_mode_t mode) {
 	instance = this;
+	m_runtimeMode = mode;
+
+	/* Common services — always constructed. */
 	this->ledModule = new LedModule();
 	this->displayModule = new DisplayModule();
-	this->timerModule = new TimerModule();
-	this->sequenceModule = new SequenceModule();
+
+	/* Raw-only services — constructed BEFORE SerialComm so that
+	 * TimerModule's manual HFXO start happens before the clock
+	 * driver initializes (in SerialComm::init), keeping the
+	 * driver's internal hfclk state consistent with hardware.
+	 * BLE-HID leaves these NULL behind checked accessors. */
+	if (mode == RUNTIME_RAW_WHAD) {
+		this->timerModule = new TimerModule();
+		this->sequenceModule = new SequenceModule();
+		this->radio = new Radio();
+	} else {
+		this->timerModule = NULL;
+		this->sequenceModule = NULL;
+		this->radio = NULL;
+	}
+
+	/* SerialComm starts the USB CDC stack from its constructor.
+	 * Must come after timer/radio so no USB interrupts can fire
+	 * while those services are mid-construction. */
 	this->serialModule = new SerialComm();
-	this->radio = new Radio();
+
+	/* Raw controllers — left NULL until init() in BLE mode. */
+	this->bleController = NULL;
+	this->dot15d4Controller = NULL;
+	this->esbController = NULL;
+	this->antController = NULL;
+	this->mosartController = NULL;
+	this->genericController = NULL;
+	this->currentController = NULL;
+
+#ifdef BOARD_CLUE
+ 	this->boardModule = new BoardModule(this);
+ 	this->menuManager = NULL;
+#endif
 
     /* Initialize WHAD library. */
     memset(&this->transportConfig, 0, sizeof(whad_transport_cfg_t));
@@ -1711,6 +1756,14 @@ Radio* Core::getRadioModule() {
 	return (this->radio);
 }
 
+runtime_mode_t Core::getRuntimeMode(void) const {
+	return m_runtimeMode;
+}
+
+bool Core::hasRawRadio(void) const {
+	return (m_runtimeMode == RUNTIME_RAW_WHAD && this->radio != NULL);
+}
+
 void Core::setControllerChannel(int channel) {
 	if (this->currentController == this->bleController) {
     this->bleController->setChannel(channel);
@@ -1718,6 +1771,7 @@ void Core::setControllerChannel(int channel) {
 }
 void Core::init() {
 
+	messagePoolReset();
 	this->messageQueue.size = 0;
 	this->messageQueue.firstElement = NULL;
 	this->messageQueue.lastElement = NULL;
@@ -1727,24 +1781,33 @@ void Core::init() {
 	this->displayModule->drawText(4, 4, "BUTTERFLY", COLOR_CYAN, COLOR_BLACK);
 	this->displayModule->drawText(4, 16, "v1.1.5", COLOR_GRAY, COLOR_BLACK);
 	this->displayModule->drawText(4, 32, "IDLE", COLOR_WHITE, COLOR_BLACK);
-	nrf_gpio_cfg_input(NRF_GPIO_PIN_MAP(1,2), NRF_GPIO_PIN_PULLUP);
-	nrf_gpio_cfg_input(NRF_GPIO_PIN_MAP(1,10), NRF_GPIO_PIN_PULLUP);
+	this->displayModule->endBootSplash();
+	nrf_gpio_cfg_input(BSP_BUTTON_0, BUTTON_PULL);
 #endif
 
+	/* USB CDC stack is started from the SerialComm constructor (called
+	 * during Core construction above). Do NOT re-init here — double
+	 * initialization corrupts the USBD driver state. */
 
-	this->bleController = new BLEController(this->getRadioModule());
-	this->dot15d4Controller = new Dot15d4Controller(this->getRadioModule());
-	this->esbController = new ESBController(this->getRadioModule());
-	this->antController = new ANTController(this->getRadioModule());
-	this->mosartController = new MosartController(this->getRadioModule());
-	this->genericController = new GenericController(this->getRadioModule());
-
+	/* Raw controllers — created ONLY in raw-WHAD runtime.
+	 * BLE-HID never constructs these; BLE stack owns the radio. */
+	if (m_runtimeMode == RUNTIME_RAW_WHAD) {
+		this->bleController = new BLEController(this->getRadioModule());
+		this->dot15d4Controller = new Dot15d4Controller(this->getRadioModule());
+		this->esbController = new ESBController(this->getRadioModule());
+		this->antController = new ANTController(this->getRadioModule());
+		this->mosartController = new MosartController(this->getRadioModule());
+		this->genericController = new GenericController(this->getRadioModule());
+		this->radio->setController(NULL);
+	}
 
 	this->currentController = NULL;
-	this->radio->setController(this->currentController);
 }
 
 bool Core::selectController(Protocol controller) {
+  if (!this->hasRawRadio()) {
+    return false;
+  }
   //this->getLedModule()->on(LED2);
 	const char *protoName = NULL;
 	if (controller == BLE_PROTOCOL) {
@@ -1812,40 +1875,33 @@ bool Core::selectController(Protocol controller) {
 void Core::sendDebug(const char *message) {
 }
 
-void Core::rebootBootloader() {
-#ifdef BOARD_CLUE
-	this->displayModule->fill(COLOR_BLACK);
-	this->displayModule->drawText(4, 4, "BOOTLOADER", COLOR_YELLOW, COLOR_BLACK);
-	nrf_delay_ms(100);
-	NRF_POWER->GPREGRET = 0xB1;
-	NVIC_SystemReset();
-#endif
-}
-
 void Core::sendDebug(uint8_t *buffer, uint8_t size) {
 	//this->pushMessageToQueue(new DebugNotification(buffer,size));
 }
 
-void Core::pushMessageToQueue(whad::NanoPbMsg *msg) {
-	MessageQueueElement *element = (MessageQueueElement*)malloc(sizeof(MessageQueueElement));
-	element->message = msg->getRaw();
-	element->nextElement = NULL;
-	if (this->messageQueue.size == 0) {
-		this->messageQueue.firstElement = element;
-		this->messageQueue.lastElement = element;
+MessagePoolStatus Core::pushMessageToQueue(whad::NanoPbMsg *msg, MessagePoolTrafficClass trafficClass, uint32_t sourceTimestamp) {
+	if (msg == NULL) {
+		messagePoolRecordOverflow();
+		return MESSAGE_POOL_EXHAUSTED;
 	}
-	else {
-		/* We insert the message at the end of the queue. */
-		this->messageQueue.lastElement->nextElement = element;
-		this->messageQueue.lastElement = element;
-	}
-	this->messageQueue.size = this->messageQueue.size + 1;
+	Message *raw = msg->getRaw();
+	msg->disown();
+	return this->pushMessageToQueue(raw, trafficClass, sourceTimestamp);
 }
 
-void Core::pushMessageToQueue(Message *msg) {
-	MessageQueueElement *element = (MessageQueueElement*)malloc(sizeof(MessageQueueElement));
+MessagePoolStatus Core::pushMessageToQueue(Message *msg, MessagePoolTrafficClass trafficClass, uint32_t sourceTimestamp) {
+	if (msg == NULL) {
+		messagePoolRecordOverflow();
+		return MESSAGE_POOL_EXHAUSTED;
+	}
+	MessageQueueElement *element = messagePoolAllocateQueueNode(trafficClass, NULL);
+	if (element == NULL) {
+		(void)messagePoolReleaseMessage(msg);
+		return MESSAGE_POOL_EXHAUSTED;
+	}
 	element->message = msg;
 	element->nextElement = NULL;
+	element->sourceTimestamp = sourceTimestamp;
 	if (this->messageQueue.size == 0) {
 		this->messageQueue.firstElement = element;
 		this->messageQueue.lastElement = element;
@@ -1856,6 +1912,7 @@ void Core::pushMessageToQueue(Message *msg) {
 		this->messageQueue.lastElement = element;
 	}
 	this->messageQueue.size = this->messageQueue.size + 1;
+	return MESSAGE_POOL_OK;
 }
 
 Message* Core::popMessageFromQueue() {
@@ -1865,56 +1922,55 @@ Message* Core::popMessageFromQueue() {
 		Message* msg = element->message;
 		this->messageQueue.firstElement = element->nextElement;
 		this->messageQueue.size = this->messageQueue.size - 1;
-		free(element);
+		if (this->messageQueue.size == 0) {
+			this->messageQueue.lastElement = NULL;
+		}
+		(void)messagePoolReleaseQueueNode(element);
 		return msg;
 	}
 }
 
 void Core::sendVerbose(const char* data) {
   std::string message(data);
-  whad::generic::Verbose *verbMsg = new whad::generic::Verbose(message);
-  this->pushMessageToQueue(verbMsg->getRaw());
+  whad::generic::Verbose verbMsg(message);
+  this->pushMessageToQueue(&verbMsg, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
 }
 
 void Core::loop() {
     Message *message = this->popMessageFromQueue();
-#ifdef BOARD_CLUE
-	static uint32_t btnDebounce = 0;
-	static bool btnAState = true;
-	static bool backlight = true;
-#endif
+
+    /* === DIAGNOSTIC BUILD (temporary) ===
+     * Loop simplified to match known-good exactly to isolate why
+     * WHAD responses never reach the host. BOARD_CLUE per-iteration
+     * work (button sampling, menu tick, stream emit) is disabled.
+     * LED_1 (red P1.01) lights when whad_get_message succeeds.
+     * LED_2 (white P0.10) lights when whad_send_message is invoked.
+     * Original behavior can be restored from git history. */
+    bool rxEverSeen = false;
+    bool txEverSent = false;
 
 	while (true) {
 
-#ifdef BOARD_CLUE
-		if (btnDebounce > 0) btnDebounce--;
-		else {
-			bool btnA = nrf_gpio_pin_read(NRF_GPIO_PIN_MAP(1,2));
-			if (!btnA && btnAState) {
-				backlight = !backlight;
-				this->displayModule->setBacklight(backlight);
-				btnDebounce = 50000;
-			}
-			btnAState = btnA;
-		}
-#endif
-
 		this->serialModule->process();
-        //this->getLedModule()->on(LED1);
 
         /* Check if we receveived a WHAD message. */
         if (whad_get_message(&msg) == WHAD_SUCCESS)
         {
-            //this->getLedModule()->off(LED1);
-            //this->getLedModule()->on(LED2);
+            if (!rxEverSeen) {
+                this->getLedModule()->on(LED1);
+                rxEverSeen = true;
+            }
             this->processInputMessage(msg);
         }
         if (message != NULL) {
+          if (!txEverSent) {
+              this->getLedModule()->on(LED2);
+              txEverSent = true;
+          }
           if (whad_send_message(message) == WHAD_ERROR)
           {
-              //this->getLedModule()->on(LED1);
           }
-          free(message);
+          (void)messagePoolReleaseMessage(message);
           message = this->popMessageFromQueue();
         }
         else {

@@ -1,6 +1,23 @@
 #include "radio.h"
 #include "bsp.h"
 #include "nrf.h"
+#include "messagePool.h"
+
+#define RADIO_MAX_JAMMING_PATTERNS 8
+#define RADIO_MAX_JAMMING_PATTERN_SIZE MESSAGE_POOL_RADIO_MAX_PACKET_SIZE
+
+static JammingPattern s_jammingPatterns[RADIO_MAX_JAMMING_PATTERNS];
+static uint8_t s_jammingPatternBufs[RADIO_MAX_JAMMING_PATTERNS][RADIO_MAX_JAMMING_PATTERN_SIZE];
+static uint8_t s_jammingMaskBufs[RADIO_MAX_JAMMING_PATTERNS][RADIO_MAX_JAMMING_PATTERN_SIZE];
+static bool s_jammingSlotInUse[RADIO_MAX_JAMMING_PATTERNS];
+static JammingPatternsQueue s_jammingQueue;
+
+static void releaseJammingSlot(JammingPattern *p) {
+	if (p >= &s_jammingPatterns[0] && p < &s_jammingPatterns[RADIO_MAX_JAMMING_PATTERNS]) {
+		s_jammingSlotInUse[(int)(p - s_jammingPatterns)] = false;
+	}
+}
+
 // Global instance of Radio
 Radio* Radio::instance = NULL;
 
@@ -75,9 +92,12 @@ void Radio::setJammingInterval(uint32_t jammingInterval) {
 }
 
 void Radio::initJammingPatternsQueue() {
-	this->jammingPatternsQueue = (JammingPatternsQueue*) malloc(sizeof(JammingPatternsQueue));
-	this->jammingPatternsQueue->size = 0;
-	this->jammingPatternsQueue->first = NULL;
+	for (int i = 0; i < RADIO_MAX_JAMMING_PATTERNS; i++) {
+		s_jammingSlotInUse[i] = false;
+	}
+	s_jammingQueue.size = 0;
+	s_jammingQueue.first = NULL;
+	this->jammingPatternsQueue = &s_jammingQueue;
 }
 
 
@@ -101,27 +121,28 @@ uint8_t  Radio::getJammingPatternsCounter() {
 }
 
 void Radio::addJammingPattern(uint8_t* pattern, uint8_t* mask, size_t size, uint8_t position) {
-	JammingPattern* current = (JammingPattern*)malloc(sizeof(JammingPattern));
-	current->pattern = (uint8_t*)malloc(sizeof(uint8_t)*size);
+	if (size > RADIO_MAX_JAMMING_PATTERN_SIZE) return;
+	int slot = -1;
+	for (int i = 0; i < RADIO_MAX_JAMMING_PATTERNS; i++) {
+		if (!s_jammingSlotInUse[i]) { slot = i; break; }
+	}
+	if (slot < 0) return;
+	JammingPattern* current = &s_jammingPatterns[slot];
+	current->pattern = s_jammingPatternBufs[slot];
 	for (size_t i=0;i<size;i++) current->pattern[i] = pattern[i];
-	current->mask = (uint8_t*)malloc(sizeof(uint8_t)*size);
+	current->mask = s_jammingMaskBufs[slot];
 	for (size_t i=0;i<size;i++) current->mask[i] = mask[i];
 	current->size = size;
 	current->position = position;
 	current->next = this->jammingPatternsQueue->first;
+	s_jammingSlotInUse[slot] = true;
 	this->jammingPatternsQueue->size++;
 	this->jammingPatternsQueue->first = current;
 }
 
 bool Radio::resetJammingPatternsQueue() {
-	JammingPattern* remove = this->jammingPatternsQueue->first;
-	JammingPattern* current = remove;
-	while (remove != NULL) {
-		current = remove->next;
-		free(remove->pattern);
-		free(remove->mask);
-		free(remove);
-		remove = current;
+	for (int i = 0; i < RADIO_MAX_JAMMING_PATTERNS; i++) {
+		s_jammingSlotInUse[i] = false;
 	}
 	this->jammingPatternsQueue->first = NULL;
 	this->jammingPatternsQueue->size = 0;
@@ -138,9 +159,7 @@ bool Radio::removeJammingPattern(uint8_t* pattern, uint8_t* mask, size_t size, u
 		if (size == current->size && position == current->position && compareBuffers(pattern,current->pattern,size) && compareBuffers(mask,current->mask,size)) {
 			this->jammingPatternsQueue->first = current->next;
 			this->jammingPatternsQueue->size--;
-			free(current->pattern);
-			free(current->mask);
-			free(current);
+			releaseJammingSlot(current);
 			return true;
 		}
 		else {
@@ -149,9 +168,7 @@ bool Radio::removeJammingPattern(uint8_t* pattern, uint8_t* mask, size_t size, u
 					remove = current->next;
 					current->next = current->next->next;
 					this->jammingPatternsQueue->size--;
-					free(remove->pattern);
-					free(remove->mask);
-					free(remove);
+					releaseJammingSlot(remove);
 					return true;
 				}
 				current = current->next;
@@ -571,14 +588,33 @@ bool Radio::disable() {
 	bool success = false;
 	if (NRF_RADIO->STATE > 0)
 	{
+		/* 1. Clear SHORTS so linked shortcuts cannot re-arm the radio
+		 *    or interfere with the disable handshake. */
+		NRF_RADIO->SHORTS = 0;
+
+		/* 2. Trigger DISABLE and bound-wait for EVENTS_DISABLED.
+		 *    Per nRF52840 PS §6.17.7 the STATE machine must reach
+		 *    DISABLED before the peripheral is safe to reconfigure.
+		 *    EVENTS_DISABLED fires in < 1 us in practice; the 1000-
+		 *    iteration cap is a watchdog against a stuck peripheral. */
+		NRF_RADIO->EVENTS_DISABLED = 0;
+		NRF_RADIO->TASKS_DISABLE   = 1;
+
+		uint32_t timeout = 1000;
+		while (NRF_RADIO->EVENTS_DISABLED == 0 && timeout > 0)
+		{
+			timeout--;
+		}
+		success = (NRF_RADIO->EVENTS_DISABLED != 0);
+
+		/* 3. Tear down the IRQ line LAST. Disabling the NVIC before
+		 *    the DISABLE handshake risks losing EVENTS_DISABLED and
+		 *    leaving the radio half-disabled, which hangs the next
+		 *    enable(). TASKS_EDSTOP is intentionally omitted: it is
+		 *    only relevant for an enabled/running ramp-down and
+		 *    interferes with the clean DISABLE path used here. */
 		NVIC_ClearPendingIRQ(RADIO_IRQn);
 		NVIC_DisableIRQ(RADIO_IRQn);
-
-		NRF_RADIO->EVENTS_DISABLED = 0;
-		NRF_RADIO->TASKS_EDSTOP = 1;
-		NRF_RADIO->TASKS_DISABLE = 1;
-		while (NRF_RADIO->EVENTS_DISABLED == 0) {}
-		success = true;
 	}
 	return success;
 }
@@ -975,9 +1011,11 @@ bool Radio::generatePcnf0Register() {
 
 bool Radio::generatePcnf1Register() {
 	if (this->phy == DOT15D4_NATIVE) {
+		if (!messagePoolPacketSizeFits(128)) return false;
 		NRF_RADIO->PCNF1 = (128UL << RADIO_PCNF1_MAXLEN_Pos);
 		return true;
 	}
+	if (!messagePoolPacketSizeFits((size_t)this->payloadLength + 2)) return false;
 	NRF_RADIO->PCNF1 = (((this->whitening == HARDWARE_WHITENING ? RADIO_PCNF1_WHITEEN_Enabled : RADIO_PCNF1_WHITEEN_Disabled) << RADIO_PCNF1_WHITEEN_Pos)  & RADIO_PCNF1_WHITEEN_Msk) |
 	(((this->endianness == LITTLE ? RADIO_PCNF1_ENDIAN_Little : RADIO_PCNF1_ENDIAN_Big) << RADIO_PCNF1_ENDIAN_Pos) & RADIO_PCNF1_ENDIAN_Msk)  |
 	((((this->preamble).size-1) << RADIO_PCNF1_BALEN_Pos) & RADIO_PCNF1_BALEN_Msk ) |
@@ -1374,7 +1412,11 @@ extern "C" void RADIO_IRQHandler(void) {
 						}
 					}
 					if (bufferSize <= 2+Radio::instance->getPayloadLength()) {
-						uint8_t *buffer = (uint8_t *)malloc(sizeof(uint8_t)*bufferSize);
+						uint8_t *buffer = messagePoolAllocatePacketBuffer(bufferSize);
+						if (buffer == NULL) {
+							NRF_RADIO->TASKS_START = 1;
+							return;
+						}
 						memcpy(buffer,Radio::instance->rxBuffer,bufferSize);
 						CrcValue crcValue;
 						crcValue.validity = UNKNOWN_CRC;
@@ -1391,7 +1433,7 @@ extern "C" void RADIO_IRQHandler(void) {
 						Radio::instance->currentTimestamp = now - (Radio::instance->getPreamble().size+bufferSize)  * 4 * (p == BLE_2MBITS || p == ESB_2MBITS ? 1 : 2) - 100;
 						controller->onReceive(Radio::instance->currentTimestamp,bufferSize,buffer,crcValue, rssi);
 
-						free(buffer);
+						(void)messagePoolReleasePacketBuffer(buffer);
 						if (Radio::instance->isAutoTXafterRXenabled()) {
 							NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk | RADIO_SHORTS_DISABLED_RXEN_Msk;
 							NRF_RADIO->PACKETPTR = (uint32_t)(Radio::instance->txBuffer);

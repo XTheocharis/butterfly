@@ -122,7 +122,7 @@ class ESBController : public Controller {
 
 		void sendJammingReport(uint32_t timestamp);
 
-		ESBPacket* buildPseudoPacketFromPayload(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi);
+		void addPseudoPacketFromPayload(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi);
 		bool send(uint8_t *data, size_t size, int retransmission_count);
 
     // Reception callback

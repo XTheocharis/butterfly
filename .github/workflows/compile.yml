@@ -18,16 +18,22 @@ jobs:
     - name: Install Toolchain
       run: |
         mkdir .toolchain
-        wget https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz
+        curl -L --fail -o arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz
+        printf '%s  %s\n' '8f6903f8ceb084d9227b9ef991490413014d991874a1e34074443c2a72b14dbd' 'arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz' | sha256sum -c -
         tar xf arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz -C .toolchain
         rm -rf arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz 
-    - name: Install SDK
+    - name: Install SDKs
       run: |
         mkdir .sdk
-        wget https://nsscprodmedia.blob.core.windows.net/prod/software-and-other-downloads/sdks/nrf5/binaries/nrf5_sdk_17.1.0_ddde560.zip
+        curl -L --fail -o nrf5_sdk_17.1.0_ddde560.zip https://nsscprodmedia.blob.core.windows.net/prod/software-and-other-downloads/sdks/nrf5/binaries/nrf5_sdk_17.1.0_ddde560.zip
+        printf '%s  %s\n' '5bfe38e744c39fd7f30e10077ba12df306ef91f368894795d6a3e7a62dc68061' 'nrf5_sdk_17.1.0_ddde560.zip' | sha256sum -c -
         unzip nrf5_sdk_17.1.0_ddde560.zip -d .sdk
         rm -rf nrf5_sdk_17.1.0_ddde560.zip
         rm -rf .sdk/nRF5_SDK_17.1.0_ddde560/components/toolchain/gcc/Makefile.posix
-        echo -ne "GNU_INSTALL_ROOT ?= $(pwd)/.toolchain/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin/\nGNU_VERSION ?= 14.3.1\nGNU_PREFIX ?= arm-none-eabi\n" > .sdk/nRF5_SDK_17.1.0_ddde560/components/toolchain/gcc/Makefile.posix
-    - name: make
-      run: make SDK_ROOT=$(pwd)/.sdk/nRF5_SDK_17.1.0_ddde560
+        printf "GNU_INSTALL_ROOT ?= $(pwd)/.toolchain/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin/\nGNU_VERSION ?= 14.3.1\nGNU_PREFIX ?= arm-none-eabi\n" > .sdk/nRF5_SDK_17.1.0_ddde560/components/toolchain/gcc/Makefile.posix
+    - name: make BOARD_PCA10059
+      run: make PLATFORM=BOARD_PCA10059 SDK_ROOT=$(pwd)/.sdk/nRF5_SDK_17.1.0_ddde560
+    - name: make BOARD_MDK_DONGLE
+      run: make PLATFORM=BOARD_MDK_DONGLE SDK_ROOT=$(pwd)/.sdk/nRF5_SDK_17.1.0_ddde560
+    - name: make BOARD_CLUE
+      run: make PLATFORM=BOARD_CLUE SDK_ROOT=$(pwd)/.sdk/nRF5_SDK_17.1.0_ddde560

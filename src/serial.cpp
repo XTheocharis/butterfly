@@ -1,7 +1,13 @@
 #include "serial.h"
 #include "bsp.h"
 #include <whad.h>
-#include "nrf.h"
+
+#ifdef BOARD_CLUE
+#include "platformRuntime.h"
+#include "runtime.h"
+/* CDC ACM internal header for DTR workaround (kernels without TIOCMBIS). */
+#include "app_usbd_cdc_acm_internal.h"
+#endif
 
 uint8_t tmp_buf[64];
 
@@ -13,13 +19,15 @@ void SerialComm::cdcAcmHandler(app_usbd_class_inst_t const * p_inst, app_usbd_cd
 	{
 		case APP_USBD_CDC_ACM_USER_EVT_PORT_OPEN:
 		{
-            /*
-                Start a read operation, if it succeeds then we will catch data in the
-                APP_USBD_CDC_ACM_USER_EVT_RX_DONE event.
+            app_usbd_class_inst_t const * p_inst =
+                app_usbd_cdc_acm_class_inst_get(&m_app_cdc_acm);
+            if (p_inst != NULL && p_inst->p_data != NULL) {
+                app_usbd_cdc_acm_ctx_t * p_ctx =
+                    (app_usbd_cdc_acm_ctx_t *)
+                    ((uint8_t *)p_inst->p_data + sizeof(app_usbd_class_data_t));
+                p_ctx->line_state |= APP_USBD_CDC_ACM_LINE_STATE_DTR;
+            }
 
-                We read at most (RX_BUFFER_SIZE - instance->rxState.index) bytes in
-                order to avoid an overflow :)
-            */
             ret_code_t ret = app_usbd_cdc_acm_read_any(
                 &m_app_cdc_acm,
                 instance->rxBuffer,
@@ -31,7 +39,15 @@ void SerialComm::cdcAcmHandler(app_usbd_class_inst_t const * p_inst, app_usbd_cd
   	    break;
 
 		case APP_USBD_CDC_ACM_USER_EVT_PORT_CLOSE:
+#ifdef BOARD_CLUE
+			/* BLE-HID must survive the host closing the serial port.
+			 * Only raw-WHAD preserves the legacy CDC-close-reset. */
+			if (runtime_cdc_close_should_reset()) {
+				platform_runtime_system_reset();
+			}
+#else
 			NVIC_SystemReset();
+#endif
 			break;
 
 		case APP_USBD_CDC_ACM_USER_EVT_TX_DONE:
@@ -62,14 +78,15 @@ void SerialComm::cdcAcmHandler(app_usbd_class_inst_t const * p_inst, app_usbd_cd
             {
 #ifdef BOARD_CLUE
                 for (int i = 0; i + 2 < size; i++) {
-                    if (instance->rxBuffer[i] == 'D' &&
-                        instance->rxBuffer[i+1] == 'F' &&
-                        instance->rxBuffer[i+2] == 'U')
-                    {
-                        NRF_POWER->GPREGRET = 0x57;
-                        NVIC_SystemReset();
-                    }
-                }
+					if (instance->rxBuffer[i] == 'D' &&
+						instance->rxBuffer[i+1] == 'F' &&
+						instance->rxBuffer[i+2] == 'U')
+					{
+						(void)platform_runtime_power_gpregret_clr(0, 0xFF);
+						(void)platform_runtime_power_gpregret_set(0, 0x57);
+						platform_runtime_system_reset();
+					}
+				}
 #endif
                 /* Forward read data to WHAD library. */
                 whad_transport_data_received(instance->rxBuffer, size);
@@ -151,13 +168,15 @@ void SerialComm::init() {
     /* Configure USBD event handler. */
 	static app_usbd_config_t usbdConfig;
     usbdConfig.ev_state_proc = SerialComm::usbdHandler;
-	
-    ret = nrf_drv_clock_init();
-	APP_ERROR_CHECK(ret);
+
+	ret = nrf_drv_clock_init();
+	/* SDH or a prior call may have already initialized the clock driver. */
+	if (ret != NRF_SUCCESS && ret != NRF_ERROR_MODULE_ALREADY_INITIALIZED)
+		APP_ERROR_CHECK(ret);
 
 	nrf_drv_clock_lfclk_request(NULL);
-
-	while(!nrf_drv_clock_lfclk_is_running());
+	while (!nrf_drv_clock_lfclk_is_running())
+		;
 
 	ret = app_timer_init();
 	APP_ERROR_CHECK(ret);
@@ -167,9 +186,11 @@ void SerialComm::init() {
 	ret = app_usbd_init(&usbdConfig);
 	APP_ERROR_CHECK(ret);
 
-	app_usbd_class_inst_t const * classCdcAcm = app_usbd_cdc_acm_class_inst_get(&m_app_cdc_acm);
+	app_usbd_class_inst_t const * classCdcAcm =
+		app_usbd_cdc_acm_class_inst_get(&m_app_cdc_acm);
 	ret = app_usbd_class_append(classCdcAcm);
 	APP_ERROR_CHECK(ret);
+
 	if (USBD_POWER_DETECTION)
 	{
 		ret = app_usbd_power_events_enable();
@@ -211,5 +232,6 @@ void SerialComm::process() {
 
     /*  Process events. */
     app_usbd_event_queue_process();
-		UNUSED_VARIABLE(ret);
+ 		UNUSED_VARIABLE(ret);
 }
+

@@ -5,6 +5,12 @@
 
 #define LED1 0
 #define LED2 1
+#ifdef BOARD_CLUE
+#define LED3 2
+#define LED_COUNT 3
+#else
+#define LED_COUNT 2
+#endif
 
 #define LED2_RED 1
 #define LED2_GREEN 2
@@ -23,7 +29,7 @@ typedef enum LedColor {
 class LedModule
 {
 	private:
-		bool state[2];
+		bool state[LED_COUNT];
 		LedColor ledColor;
 	public:
 		LedModule();

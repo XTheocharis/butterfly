@@ -1,0 +1,7 @@
+
+# Build artifacts
+build/
+dist/
+
+# OMO orchestrator state
+.omo/

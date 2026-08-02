@@ -2,7 +2,14 @@
 
 Packet::Packet(PacketType packetType,uint8_t *packetBuffer, size_t packetSize, uint32_t timestamp, uint8_t source, uint8_t channel, int8_t rssi, CrcValue crcValue) {
 	this->packetType = packetType;
-  this->payload = (uint8_t*)malloc(1+4+1+1+1+1+packetSize);
+	size_t payloadSize = 1+4+1+1+1+1+packetSize;
+  this->payload = messagePoolAllocatePacketPayload(payloadSize);
+	this->valid = (this->payload != NULL);
+	if (!this->valid) {
+		this->packetPointer = NULL;
+		this->packetSize = 0;
+		return;
+	}
 	this->payload[0] = (uint8_t)(this->packetType);
 
 	this->timestamp = timestamp;
@@ -36,6 +43,10 @@ PacketType Packet::getPacketType() {
 	return this->packetType;
 }
 
+bool Packet::isValid() {
+	return this->valid;
+}
+
 uint8_t Packet::getChannel() {
 	return this->channel;
 }
@@ -66,7 +77,10 @@ bool Packet::isCrcValid() {
 }
 
 Packet::~Packet() {
-	free(this->payload);
+	if (this->payload != NULL) {
+		(void)messagePoolReleasePacketPayload(this->payload);
+		this->payload = NULL;
+	}
 }
 
 bool BLEPacket::needResponse(uint8_t *payload, size_t size) {
@@ -101,7 +115,8 @@ bool BLEPacket::needResponse(uint8_t *payload, size_t size) {
 }
 void BLEPacket::forgeAdvInd(uint8_t **payload,size_t *size, uint8_t *advertiser, bool advertiserRandom,  uint8_t *data, size_t dataSize) {
 	*size=8 + dataSize;
-	*payload = (uint8_t *)malloc(sizeof(uint8_t)*(*size));
+	*payload = messagePoolAllocatePacketBuffer(*size);
+	if (*payload == NULL) return;
 	// Header
 
 	// RxAdd | TxAdd | ChSel | PDU_type = 0
@@ -113,7 +128,8 @@ void BLEPacket::forgeAdvInd(uint8_t **payload,size_t *size, uint8_t *advertiser,
 }
 void BLEPacket::forgeScanResponse(uint8_t **payload,size_t *size, uint8_t *advertiser, bool advertiserRandom,  uint8_t *data, size_t dataSize, bool targetRandom) {
 	*size=8 + dataSize;
-	*payload = (uint8_t *)malloc(sizeof(uint8_t)*(*size));
+	*payload = messagePoolAllocatePacketBuffer(*size);
+	if (*payload == NULL) return;
 	// Header
 
 	// RxAdd | TxAdd | ChSel | PDU_type = 0
@@ -125,7 +141,8 @@ void BLEPacket::forgeScanResponse(uint8_t **payload,size_t *size, uint8_t *adver
 }
 void BLEPacket::forgeScanRequest(uint8_t **payload,size_t *size, uint8_t *initiator, bool initiatorRandom,  uint8_t *responder, bool responderRandom) {
 	*size=14;
-	*payload = (uint8_t *)malloc(sizeof(uint8_t)*(*size));
+	*payload = messagePoolAllocatePacketBuffer(*size);
+	if (*payload == NULL) return;
 	// Header
 
 	// RxAdd | TxAdd | ChSel | PDU_type = 3
@@ -144,7 +161,8 @@ void BLEPacket::forgeScanRequest(uint8_t **payload,size_t *size, uint8_t *initia
 void BLEPacket::forgeConnectionRequest(uint8_t **payload,size_t *size, uint8_t *initiator, bool initiatorRandom,  uint8_t *responder, bool responderRandom, uint32_t accessAddress,  uint32_t crcInit, uint8_t windowSize, uint16_t windowOffset, uint16_t hopInterval, uint16_t slaveLatency, uint16_t timeout, uint8_t sca, uint8_t hopIncrement, uint8_t *channelMap) {
 	bool selectAlgorithm2 = false;
 	*size=36;
-	*payload = (uint8_t *)malloc(sizeof(uint8_t)*(*size));
+	*payload = messagePoolAllocatePacketBuffer(*size);
+	if (*payload == NULL) return;
 	// Header
 
 	// RxAdd | TxAdd | ChSel | PDU_type = 5
@@ -186,7 +204,8 @@ void BLEPacket::forgeConnectionRequest(uint8_t **payload,size_t *size, uint8_t *
 
 void BLEPacket::forgeTerminateInd(uint8_t **payload,size_t *size, uint8_t code) {
 	*size=4;
-	*payload = (uint8_t *)malloc(sizeof(uint8_t)*(*size));
+	*payload = messagePoolAllocatePacketBuffer(*size);
+	if (*payload == NULL) return;
 	(*payload)[0] = 0x03;
 	(*payload)[1] = 0x02;
 	(*payload)[2] = 0x02;
@@ -194,7 +213,8 @@ void BLEPacket::forgeTerminateInd(uint8_t **payload,size_t *size, uint8_t code) 
 }
 void BLEPacket::forgeConnectionUpdateRequest(uint8_t **payload,size_t *size, uint8_t winSize, uint16_t winOffset, uint16_t interval, uint16_t latency, uint16_t timeout, uint16_t instant) {
 	*size=14;
-	*payload = (uint8_t *)malloc(sizeof(uint8_t)*(*size));
+	*payload = messagePoolAllocatePacketBuffer(*size);
+	if (*payload == NULL) return;
 	(*payload)[0] = 0x03;
 	(*payload)[1] = 0x0c;
 	(*payload)[2] = 0x00;
@@ -212,7 +232,8 @@ void BLEPacket::forgeConnectionUpdateRequest(uint8_t **payload,size_t *size, uin
 }
 void BLEPacket::forgeChannelMapRequest(uint8_t **payload,size_t *size,uint16_t instant, uint8_t *channelMap) {
 	*size=10;
-	*payload = (uint8_t *)malloc(sizeof(uint8_t)*(*size));
+	*payload = messagePoolAllocatePacketBuffer(*size);
+	if (*payload == NULL) return;
 	(*payload)[0] = 0x03;
 	(*payload)[1] = 0x08;
 	(*payload)[2] = 0x01;
@@ -227,6 +248,7 @@ void BLEPacket::forgeChannelMapRequest(uint8_t **payload,size_t *size,uint16_t i
 
 
 BLEPacket::BLEPacket(uint32_t accessAddress,uint8_t *packetBuffer, size_t packetSize, uint32_t timestamp,  uint32_t timestampRelative, uint8_t source, uint8_t channel,int8_t rssi, CrcValue crcValue) : Packet(BLE_PACKET_TYPE, NULL, 4+4+packetSize+3, timestamp,source,channel,rssi,crcValue) {
+	if (!this->isValid()) return;
 	this->timestampRelative = timestampRelative;
 	this->connectionHandle = 0;
 	this->payload[9] = (uint8_t)(timestampRelative & 0x000000FF);
@@ -533,6 +555,7 @@ BLEAdvertisementType BLEPacket::extractAdvertisementType() {
 }
 
 Dot15d4Packet::Dot15d4Packet(uint8_t *packetBuffer, size_t packetSize, uint32_t timestamp, uint8_t source, uint8_t channel, int8_t rssi, CrcValue crcValue, uint8_t lqi) : Packet(DOT15D4_PACKET_TYPE, packetBuffer, packetSize+2, timestamp, source, channel, rssi, crcValue) {
+	if (!this->isValid()) return;
 	for (size_t i=0;i<packetSize;i++) {
 		this->packetPointer[i] = packetBuffer[i];
 	}
@@ -588,6 +611,7 @@ uint32_t Dot15d4Packet::getFCS() {
 }
 
 ESBPacket::ESBPacket(uint8_t *packetBuffer, size_t packetSize, uint32_t timestamp, uint8_t source, uint8_t channel, int8_t rssi, CrcValue crcValue, bool unifying) : Packet(ESB_PACKET_TYPE, packetBuffer, packetSize, timestamp, source, channel, rssi, crcValue){
+	if (!this->isValid()) return;
 	this->unifying = unifying;
 }
 uint16_t ESBPacket::updateCrc(uint16_t crc, uint8_t byte, uint8_t bits) {
@@ -642,6 +666,7 @@ uint8_t* MosartPacket::getAddress() {
 }
 
 ANTPacket::ANTPacket(uint8_t *packetBuffer, size_t packetSize, uint32_t timestamp, uint8_t source, uint8_t channel, int8_t rssi, CrcValue crcValue, uint16_t preamble) : Packet(ANT_PACKET_TYPE, packetBuffer, packetSize+4, timestamp, source, channel, rssi, crcValue) {
+	if (!this->isValid()) return;
 	this->packetPointer[0] = (uint8_t)(preamble & 0xFF);
 	this->packetPointer[1] = (uint8_t)((preamble & 0xFF00) >> 8);
 
@@ -663,6 +688,7 @@ uint8_t ANTPacket::getDeviceType() {
 }
 
 GenericPacket::GenericPacket(uint8_t *packetBuffer, size_t packetSize, uint32_t timestamp, uint8_t source, uint8_t channel, int8_t rssi, CrcValue crcValue, uint8_t *preamble, size_t preambleSize, uint32_t deviation,uint32_t datarate,whad::phy::ModulationType modulation, bool little) : Packet(GENERIC_PACKET_TYPE, packetBuffer, packetSize+preambleSize, timestamp, source, channel, rssi, crcValue) {
+	if (!this->isValid()) return;
 	for (size_t i=0;i<preambleSize;i++) {
 		this->packetPointer[i] = preamble[i];
 	}

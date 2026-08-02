@@ -23,8 +23,6 @@ class Controller {
 		virtual void onMatch(uint8_t *buffer, size_t size) = 0;
 		virtual void onEnergyDetection(uint32_t timestamp, uint8_t value) = 0;
 
-        static whad::NanoPbMsg* buildMessageFromPacket(Packet* packet);
-
 };
 
 #endif

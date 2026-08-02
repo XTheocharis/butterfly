@@ -2,6 +2,9 @@
 #include "../core.h"
 #include <whad.h>
 
+static int s_remappingTable[37];
+static uint8_t s_hoppingSequences[12][37];
+
 // BLE packet counter
 static inline void set_ccm_counter(EncryptionData *e, uint32_t c) {
 	e->counter[0] = (uint8_t)(c);
@@ -359,8 +362,7 @@ void BLEController::updateChannelsInUse(uint8_t* channelMap) {
 			}
 		}
 	}
-	if (this->remappingTable != NULL) free(this->remappingTable);
-	this->remappingTable = (int*)malloc(sizeof(int)* this->numUsedChannels);
+	this->remappingTable = s_remappingTable;
 	int j=0;
 	for (int i=0;i<37;i++) {;
 		if (this->channelsInUse[i]) {
@@ -385,7 +387,7 @@ void BLEController::generateLegacyHoppingSequence(uint8_t hopIncrement, uint8_t 
 
 void BLEController::generateAllHoppingSequences() {
 		for (uint8_t hopIncrement=0;hopIncrement<12;hopIncrement++) {
-			this->activeConnectionRecovery.hoppingSequences[hopIncrement] = (uint8_t*)malloc(sizeof(uint8_t) * 37);
+			this->activeConnectionRecovery.hoppingSequences[hopIncrement] = s_hoppingSequences[hopIncrement];
 			this->generateLegacyHoppingSequence(hopIncrement+5, this->activeConnectionRecovery.hoppingSequences[hopIncrement]);
 		}
 }
@@ -1565,7 +1567,7 @@ bool BLEController::newAdvertisingTransmission() {
 	BLEPacket::forgeAdvInd(&adv_ind, &adv_ind_size, this->own.bytes, this->ownRandom, this->advertisingData.advertisingData, this->advertisingData.advertisingDataSize);
 	this->radio->send(adv_ind, adv_ind_size, BLEController::channelToFrequency(this->channel),this->channel);
 	bsp_board_led_invert(0);
-	free(adv_ind);
+		(void)messagePoolReleasePacketBuffer(adv_ind);
 	return true;
 }
 
@@ -1737,7 +1739,7 @@ void BLEController::prepareSlaveHijacking() {
 	this->setAttackPayload(terminate_ind,terminate_ind_size);
 
 	// Release the memory
-	free(terminate_ind);
+		(void)messagePoolReleasePacketBuffer(terminate_ind);
 }
 
 void BLEController::prepareMasterRelatedHijacking() {
@@ -1758,7 +1760,7 @@ void BLEController::prepareMasterRelatedHijacking() {
 	this->setAttackPayload(connection_update, connection_update_size);
 
 	// Release the memory
-	free(connection_update);
+		(void)messagePoolReleasePacketBuffer(connection_update);
 }
 
 void BLEController::startAttack(BLEAttack attack) {
@@ -2052,7 +2054,8 @@ bool BLEController::inject() {
 
 	if (this->attackStatus.attack != BLE_ATTACK_NONE) {
 		if (!this->attackStatus.injecting) {
-			uint8_t *payload = (uint8_t *)malloc(sizeof(uint8_t) * this->attackStatus.size);
+			uint8_t payload[MESSAGE_POOL_PACKET_SLOT_SIZE];
+			if (this->attackStatus.size > sizeof(payload)) return false;
 			for (size_t i=0;i<this->attackStatus.size;i++) payload[i] = this->attackStatus.payload[i];
 			payload[0] = (payload[0] & 0xF3) | (((this->slaveSequenceNumbers.sn+1)%2) << 2)|(this->slaveSequenceNumbers.nesn << 3);
 			this->attackStatus.injectionTimestamp = TimerModule::instance->getTimestamp();
@@ -2063,7 +2066,6 @@ bool BLEController::inject() {
 			this->attackStatus.injectionCounter++;
 			this->attackStatus.injecting = true;
 
-			free(payload);
 		}
 	}
 	return false;
@@ -2075,13 +2077,10 @@ BLEControllerState BLEController::getState() {
 
 void BLEController::sendInjectionReport(bool status, uint32_t injectionCount) {
     /* Craft an injection report notification. */
-    whad::NanoPbMsg *notification = new whad::ble::Injected(this->accessAddress, injectionCount, status);
+    whad::ble::Injected notification(this->accessAddress, injectionCount, status);
 
     /* Add notification to our message queue. */
-	Core::instance->pushMessageToQueue(notification);
-
-    /* Free notification wrapper. */
-    delete notification;
+	Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
 }
 
 void BLEController::sendAdvIntervalReport(uint32_t interval) {
@@ -2089,100 +2088,83 @@ void BLEController::sendAdvIntervalReport(uint32_t interval) {
 }
 void BLEController::sendAccessAddressReport(uint32_t accessAddress, uint32_t timestamp, int32_t rssi) {
     /* Craft an access address report. */
-    whad::NanoPbMsg *notification = new whad::ble::AccessAddressDiscovered(accessAddress, timestamp, rssi);
+    whad::ble::AccessAddressDiscovered notification(accessAddress, timestamp, rssi);
 
     /* Add notification to our message queue. */
-	Core::instance->pushMessageToQueue(notification);
-
-    /* Free notification wrapper. */
-    delete notification;
+	Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, timestamp);
 }
 
 void BLEController::sendExistingConnectionReport(uint32_t accessAddress, uint32_t crcInit, uint8_t *channelMap, uint16_t hopInterval, uint8_t hopIncrement) {
-    whad::ble::ChannelMap *chanMap;
-
-    /* Craft an existing connection report notification. */
-    if (channelMap != NULL) {
-        chanMap = new whad::ble::ChannelMap(channelMap);
-    } else {
-        chanMap = new whad::ble::ChannelMap();
-    }
-    whad::NanoPbMsg *notification = new whad::ble::Synchronized(accessAddress, crcInit, hopInterval, hopIncrement, *chanMap);
+	/* Craft an existing connection report notification. */
+	whad::ble::ChannelMap chanMap;
+	if (channelMap != NULL) {
+		chanMap = whad::ble::ChannelMap(channelMap);
+	}
+	whad::ble::Synchronized notification(accessAddress, crcInit, hopInterval, hopIncrement, chanMap);
 
     /* Add notification to our message queue. */
-	Core::instance->pushMessageToQueue(notification);
-
-    /* Free notification wrapper. */
-    delete notification;
+	Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
 }
 
 void BLEController::sendConnectionReport(ConnectionStatus status) {
-    whad::NanoPbMsg *notification = NULL;
+	switch (status)
+	{
+		case CONNECTION_STARTED:
+		{
+			/* Craft a synchronization notification. */
+			whad::ble::Synchronized notification(
+				this->accessAddress, this->crcInit, this->hopInterval, this->hopIncrement,
+				whad::ble::ChannelMap(this->channelMap)
+			);
+			Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
+		}
+		break;
 
-    switch (status)
-    {
-        case CONNECTION_STARTED:
-        {
-            /* Craft a synchronization notification. */
-            notification = new whad::ble::Synchronized(
-                this->accessAddress, this->crcInit, this->hopInterval, this->hopIncrement,
-                whad::ble::ChannelMap(this->channelMap)
-            );
-        }
-        break;
+		case DISCONNECTED:
+		{
+			/* Craft a disconnected notification. */
+			whad::ble::Disconnected notification(0, 0x16);
+			Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
+		}
+		break;
 
-        case DISCONNECTED:
-        {
-            /* Craft a disconnected notification. */
-            notification = new whad::ble::Disconnected(0, 0x16);
-        }
-        break;
-
-        case CONNECTION_LOST:
-        {
-            /* Craft a connection lost notification. */
-            notification = new whad::ble::Desynchronized(this->accessAddress);
-        }
-        break;
+		case CONNECTION_LOST:
+		{
+			/* Craft a connection lost notification. */
+			whad::ble::Desynchronized notification(this->accessAddress);
+			Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
+		}
+		break;
 
         case ATTACK_SUCCESS:
         {
-            if (this->attackStatus.attack == BLE_ATTACK_MITM ||
-                this->attackStatus.attack == BLE_ATTACK_MASTER_HIJACKING  ||
-                this->attackStatus.attack == BLE_ATTACK_SLAVE_HIJACKING)
-            {
-                notification = new whad::ble::Hijacked(this->accessAddress, true);
-            }
-        }
+			if (this->attackStatus.attack == BLE_ATTACK_MITM ||
+				this->attackStatus.attack == BLE_ATTACK_MASTER_HIJACKING  ||
+				this->attackStatus.attack == BLE_ATTACK_SLAVE_HIJACKING)
+			{
+				whad::ble::Hijacked notification(this->accessAddress, true);
+				Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
+			}
+		}
         break;
 
         case ATTACK_FAILURE:
         {
-            if (this->attackStatus.attack == BLE_ATTACK_MITM ||
-                this->attackStatus.attack == BLE_ATTACK_MASTER_HIJACKING  ||
-                this->attackStatus.attack == BLE_ATTACK_SLAVE_HIJACKING)
-            {
-                notification = new whad::ble::Hijacked(this->accessAddress, false);
-            }
-        }
+			if (this->attackStatus.attack == BLE_ATTACK_MITM ||
+				this->attackStatus.attack == BLE_ATTACK_MASTER_HIJACKING  ||
+				this->attackStatus.attack == BLE_ATTACK_SLAVE_HIJACKING)
+			{
+				whad::ble::Hijacked notification(this->accessAddress, false);
+				Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
+			}
+		}
         break;
 
         default:
-        {
-            notification = NULL;
-        }
-        break;
-    }
-
-    /* If a notification has to be sent, process it. */
-    if (notification != NULL)
-    {
-        /* Add notification to our message queue. */
-        Core::instance->pushMessageToQueue(notification);
-
-        /* Free notification wrapper. */
-        delete notification;
-    }
+		{
+		}
+		break;
+	}
 }
 
 
@@ -2231,13 +2213,10 @@ void BLEController::releaseTimers() {
 
 void BLEController::sendTriggeredReport(uint8_t id) {
     /* Craft a triggered notification. */
-    whad::NanoPbMsg *notification = new whad::ble::Triggered(id);
+    whad::ble::Triggered notification(id);
 
     /* Add notification to our message queue. */
-	Core::instance->pushMessageToQueue(notification);
-
-    /* Free notification wrapper. */
-    delete notification;
+	Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
 }
 
 void BLEController::sendConnectedReport() {
@@ -2269,10 +2248,8 @@ void BLEController::sendConnectedReport() {
         responder
     );
 
-    /* Craft a connected notification, enqueue and free wrapper. */
-    whad::NanoPbMsg *notification = new whad::ble::Connected(0, responderAddr, initiatorAddr);
-	Core::instance->pushMessageToQueue(notification);
-    delete notification;
+    whad::ble::Connected notification(0, responderAddr, initiatorAddr);
+	Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
 }
 
 void BLEController::sendSlaveConnectedReport() {
@@ -2306,17 +2283,14 @@ void BLEController::sendSlaveConnectedReport() {
     );
 
     /* Craft a connected notification. */
-    whad::NanoPbMsg *notification = new whad::ble::Connected(
+    whad::ble::Connected notification(
         0,              /* Connection handle */
         responderAddr,  /* Responder BD address */
         initiatorAddr   /* Initiator BD address */
     );
 
     /* Add notification to our message queue. */
-    Core::instance->pushMessageToQueue(notification);
-
-    /* Free notification wrapper. */
-    delete notification;
+    Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
 }
 
 void BLEController::connect(uint8_t *address, bool random) {
@@ -2425,7 +2399,7 @@ void BLEController::connect(uint8_t *address, bool random,  uint32_t accessAddre
 
 	// Send the packet
 	this->radio->updateTXBuffer(connection_request, connection_request_size);
-	free(connection_request);
+	(void)messagePoolReleasePacketBuffer(connection_request);
 	// Configure radio to monitor only advertisements from targeted device (hardware filter needed)
 	this->setFilter(true, address[0], address[1], address[2], address[3], address[4], address[5]);
 
@@ -2597,7 +2571,7 @@ void BLEController::advertisementScanningProcessing(BLEPacket *pkt) {
 			);
 			//bsp_board_led_invert(0);
 			this->radio->updateTXBuffer(scan_request, scan_request_size);
-			free(scan_request);
+			(void)messagePoolReleasePacketBuffer(scan_request);
 		}
 	}
 	// Update the packet direction
@@ -2701,6 +2675,7 @@ void BLEController::disconnect() {
 		size_t terminate_ind_size;
 		BLEPacket::forgeTerminateInd(&terminate_ind, &terminate_ind_size,0x13);
 		this->setMasterPayload(terminate_ind,terminate_ind_size);
+		(void)messagePoolReleasePacketBuffer(terminate_ind);
 		this->connectionLost();
 	}
 }
@@ -2939,7 +2914,7 @@ void BLEController::advertisementPacketProcessing(BLEPacket *pkt) {
 			this->radio->send(scan_rsp, scan_rsp_size, BLEController::channelToFrequency(this->channel), this->channel);
 			nrf_delay_us(8*(scan_rsp_size+4+3));
 			//bsp_board_led_invert(1);
-			free(scan_rsp);
+		(void)messagePoolReleasePacketBuffer(scan_rsp);
 		}
 		else if (pkt->extractAdvertisementType() == CONNECT_REQ) {
 			if (this->follow) {
@@ -3146,20 +3121,19 @@ void BLEController::onReceive(uint32_t timestamp, uint8_t size, uint8_t *buffer,
 		this->hopIncrementRecoveryProcessing(timestamp, size, buffer ,crcValue, rssi);
 	}
 	else if (crcValue.validity == VALID_CRC) {
-		BLEPacket *pkt = new BLEPacket(this->accessAddress,buffer, size,timestamp, relativeTimestamp, 0, this->channel,rssi, crcValue);
-		if (pkt->isAdvertisement()) {
+		BLEPacket pkt(this->accessAddress,buffer, size,timestamp, relativeTimestamp, 0, this->channel,rssi, crcValue);
+		if (!pkt.isValid()) return;
+		if (pkt.isAdvertisement()) {
 			// If the packet is an advertisement, call onAdvertisementPacket method
-			this->advertisementPacketProcessing(pkt);
+			this->advertisementPacketProcessing(&pkt);
 		}
 		else {
 			// If the packet is a connection packet, call onConnectionPacket
 			if (this->sync) {
 				this->checkSequenceReceptionTriggers(buffer, size);
 			}
-			this->connectionPacketProcessing(pkt);
+			this->connectionPacketProcessing(&pkt);
 		}
-		// Delete the packet object if it is not NULL
-		if (pkt != NULL) delete pkt;
 	}
 }
 

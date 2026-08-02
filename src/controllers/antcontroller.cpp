@@ -177,9 +177,10 @@ void ANTController::releaseTimers() {
 }
 
 void ANTController::onReceive(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi) {
-  ANTPacket *pkt = new ANTPacket(buffer,size,timestamp,0x00,channel,rssi,crcValue, this->preamble);
-  if (crcValue.validity == VALID_CRC && this->checkFilter(pkt)) {
-    this->addPacket(pkt);
+  ANTPacket pkt(buffer,size,timestamp,0x00,channel,rssi,crcValue, this->preamble);
+  if (!pkt.isValid()) return;
+  if (crcValue.validity == VALID_CRC && this->checkFilter(&pkt)) {
+    this->addPacket(&pkt);
 		if (this->sendingResponse) {
 			if (this->slaveTimer == NULL) {
 				this->slaveTimer = TimerModule::instance->getTimer();
@@ -210,9 +211,6 @@ void ANTController::onReceive(uint32_t timestamp, uint8_t size, uint8_t *buffer,
 			}
 		}
 
-  }
-  else {
-		delete pkt;
   }
 }
 

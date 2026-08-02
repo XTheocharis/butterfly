@@ -16,6 +16,13 @@ typedef struct MosartAttackStatus {
 	bool successful;
 } MosartAttackStatus;
 
+typedef struct MosartDecodedPacket {
+	uint8_t packet[MESSAGE_POOL_PACKET_SLOT_SIZE];
+	size_t size;
+	uint8_t source;
+	CrcValue crcValue;
+} MosartDecodedPacket;
+
 class MosartController : public Controller {
   protected:
 		int channel;
@@ -44,7 +51,7 @@ class MosartController : public Controller {
 		void setChannel(int channel);
 
 		void setHardwareConfiguration();
-		MosartPacket *buildMosartPacket(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi);
+		bool buildMosartPacket(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi, MosartDecodedPacket *decoded);
 		void setJammerConfiguration();
 
     void send(uint8_t* data, size_t size);

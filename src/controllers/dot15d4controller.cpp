@@ -243,7 +243,9 @@ void Dot15d4Controller::startAttack(Dot15d4Attack attack) {
 }
 
 
-Dot15d4Packet* Dot15d4Controller::wazabeeDecoder(uint8_t *buffer, uint8_t size,uint32_t timestamp, CrcValue crcValue, uint8_t rssi) {
+bool Dot15d4Controller::wazabeeDecoder(uint8_t *buffer, uint8_t size,uint32_t timestamp, CrcValue crcValue, uint8_t rssi, Dot15d4DecodedPacket *decoded) {
+	(void)timestamp;
+	(void)crcValue;
 	Dot15d4Source source = RECEIVER;
 	// buffer of Zigbee symbols
 	uint8_t output_buffer[50];
@@ -346,25 +348,28 @@ Dot15d4Packet* Dot15d4Controller::wazabeeDecoder(uint8_t *buffer, uint8_t size,u
 			source = CORRECTOR;
 		}
 	}
-	return new Dot15d4Packet(output_buffer+1,output_buffer[1]+1-2,timestamp,source,this->channel, rssi, fcsValue, rssi);
+	decoded->size = output_buffer[1]+1-2;
+	decoded->source = source;
+	decoded->fcsValue = fcsValue;
+	decoded->lqi = rssi;
+	memcpy(decoded->packet, output_buffer+1, decoded->size);
+	return true;
 }
 
 void Dot15d4Controller::sendJammingReport(uint32_t timestamp) {
     /* Craft a jammed notification. */
-    whad::NanoPbMsg *notification = new whad::dot15d4::Jammed(timestamp);
+    whad::dot15d4::Jammed notification(timestamp);
 
     /* Queue notification. */
-    Core::instance->pushMessageToQueue(notification);
-
-    /* Free notification wrapper. */
-    delete notification;
+    Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, timestamp);
 }
 
 void Dot15d4Controller::onReceive(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi) {
-	Dot15d4Packet* pkt = NULL;
+	Dot15d4DecodedPacket decoded;
+	memset(&decoded, 0, sizeof(decoded));
 
 	if (this->attackStatus.attack == DOT15D4_ATTACK_CORRECTION && this->attackStatus.running) {
-		pkt = this->wazabeeDecoder(buffer,size,timestamp, crcValue, rssi);
+		if (!this->wazabeeDecoder(buffer,size,timestamp, crcValue, rssi, &decoded)) return;
 	}
 	else {
 		uint8_t lqi = buffer[buffer[0]-1];
@@ -372,27 +377,31 @@ void Dot15d4Controller::onReceive(uint32_t timestamp, uint8_t size, uint8_t *buf
         /* Flip Dot15d4 FCS bytes. */
         crcValue.value = ((crcValue.value & 0xff00) >> 8) | ((crcValue.value & 0xff) << 8);
 
-		pkt = new Dot15d4Packet(buffer,1+buffer[0]-2,timestamp,RECEIVER,this->channel,rssi,crcValue, (uint8_t)(lqi > 63 ? 255 : lqi*4));
+		decoded.size = 1+buffer[0]-2;
+		decoded.source = RECEIVER;
+		decoded.fcsValue = crcValue;
+		decoded.lqi = (uint8_t)(lqi > 63 ? 255 : lqi*4);
+		memcpy(decoded.packet, buffer, decoded.size);
 	}
 
-	if (pkt != NULL) {
-		this->addPacket(pkt);
+	Dot15d4Packet pkt(decoded.packet, decoded.size, timestamp, decoded.source, this->channel, rssi, decoded.fcsValue, decoded.lqi);
+	if (pkt.isValid()) {
+		this->addPacket(&pkt);
 
-		if (pkt->extractAcknowledgmentRequest() && this->autoAcknowledgement) {
-			Dot15d4AddressMode mode = pkt->extractDestinationAddressMode();
+		if (pkt.extractAcknowledgmentRequest() && this->autoAcknowledgement) {
+			Dot15d4AddressMode mode = pkt.extractDestinationAddressMode();
 			if (
-					(mode == ADDR_SHORT && pkt->extractShortDestinationAddress() != 0xFFFF && pkt->extractShortDestinationAddress() == this->shortAddress) ||
-					(mode == ADDR_EXTENDED && pkt->extractExtendedDestinationAddress() == this->extendedAddress)
+					(mode == ADDR_SHORT && pkt.extractShortDestinationAddress() != 0xFFFF && pkt.extractShortDestinationAddress() == this->shortAddress) ||
+					(mode == ADDR_EXTENDED && pkt.extractExtendedDestinationAddress() == this->extendedAddress)
 				) {
 
 					nrf_delay_us(5*(4*1000/250));
-					uint8_t ack_packet[4] = {5, 0x02, 0x00, pkt->extractSequenceNumber()};
+					uint8_t ack_packet[4] = {5, 0x02, 0x00, pkt.extractSequenceNumber()};
 					this->radio->send(ack_packet,4,Dot15d4Controller::channelToFrequency(this->channel), 0x00);
 					nrf_delay_us((4+6)*8*1000/250);
 
 			}
 		}
-		delete pkt;
 	}
 }
 
@@ -405,11 +414,8 @@ void Dot15d4Controller::onJam(uint32_t timestamp) {
 
 void Dot15d4Controller::onEnergyDetection(uint32_t timestamp, uint8_t value) {
     /* Craft a energy detection notification. */
-    whad::NanoPbMsg *notification = new whad::dot15d4::EnergySample(timestamp, value);
+    whad::dot15d4::EnergySample notification(timestamp, value);
 
     /* Enqueue message. */
-	Core::instance->pushMessageToQueue(notification);
-
-    /* Free notification wrapper. */
-    delete notification;
+	Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, timestamp);
 }

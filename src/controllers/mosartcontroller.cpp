@@ -114,7 +114,9 @@ void MosartController::startAttack(MosartAttack attack) {
 }
 
 
-MosartPacket * MosartController::buildMosartPacket(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi) {
+bool MosartController::buildMosartPacket(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi, MosartDecodedPacket *decoded) {
+	(void)timestamp;
+	(void)rssi;
 	size_t end = 0;
 	size_t start = 0;
 	bool startFound = false;
@@ -131,9 +133,13 @@ MosartPacket * MosartController::buildMosartPacket(uint32_t timestamp, uint8_t s
 		}
 	}
 	if (!startFound || !endFound || end < 5) {
-		return NULL;
+		return false;
 	}
 	size_t packetSize = (end - start) + 2;
+	if (packetSize > MESSAGE_POOL_PACKET_SLOT_SIZE) {
+		messagePoolRecordOverflow();
+		return false;
+	}
 	uint8_t packet[packetSize];
 	packet[0] = 0xF0;
 	packet[1] = 0xF0;
@@ -157,13 +163,21 @@ MosartPacket * MosartController::buildMosartPacket(uint32_t timestamp, uint8_t s
 
 		if (calculate_crc_mosart(packet+6, packetSize-3-6) == extractedCrc) crcValue.validity = VALID_CRC;
 		else crcValue.validity = INVALID_CRC;
-		return new MosartPacket(packet,packetSize, timestamp,0x00, channel,rssi,crcValue);
+		memcpy(decoded->packet, packet, packetSize);
+		decoded->size = packetSize;
+		decoded->source = 0x00;
+		decoded->crcValue = crcValue;
+		return true;
 
 	}
 	else {
 
 		crcValue.validity = VALID_CRC;
-		return new MosartPacket(packet+1,packetSize-1, timestamp,0x01, channel,rssi,crcValue);
+		memcpy(decoded->packet, packet+1, packetSize-1);
+		decoded->size = packetSize-1;
+		decoded->source = 0x01;
+		decoded->crcValue = crcValue;
+		return true;
 	}
 }
 
@@ -185,17 +199,17 @@ void MosartController::sendJammingReport(uint32_t timestamp) {
 }
 
 void MosartController::onReceive(uint32_t timestamp, uint8_t size, uint8_t *buffer, CrcValue crcValue, uint8_t rssi) {
-  MosartPacket *pkt = this->buildMosartPacket(timestamp,size,buffer,crcValue,rssi);
-	if (pkt != NULL) {
+  MosartDecodedPacket decoded;
+  memset(&decoded, 0, sizeof(decoded));
+	if (this->buildMosartPacket(timestamp,size,buffer,crcValue,rssi, &decoded)) {
+		MosartPacket pkt(decoded.packet, decoded.size, timestamp, decoded.source, channel, rssi, decoded.crcValue);
+		if (!pkt.isValid()) return;
 		if (
-				pkt->isCrcValid() &&
-				(this->donglePackets || pkt->getSource() != 0x01) &&
-				this->checkAddress(pkt)
+				pkt.isCrcValid() &&
+				(this->donglePackets || pkt.getSource() != 0x01) &&
+				this->checkAddress(&pkt)
 			) {
-	  		this->addPacket(pkt);
-		}
-		else {
-			delete pkt;
+	  		this->addPacket(&pkt);
 		}
 	}
 }

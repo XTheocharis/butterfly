@@ -14,50 +14,9 @@ Controller::Controller(Radio *radio) {
  */
 
 void Controller::addPacket(Packet* packet) {
-    /* Build a WHAD notification message from packet. */
-    whad::NanoPbMsg *message = buildMessageFromPacket(packet);
-
-    /* Add notification to our message queue. */
-	Core::instance->pushMessageToQueue(message);
-
-    /* Free the notification wrapper. */
-    delete message;
-}
-
-
-/**
- * @brief   Send debug message to the host.
- *
- * @param[in]   msg     Pointer to a text string to send as a debug message
- */
-
-void Controller::sendDebug(const char* msg) {
-    /* Craft a verbose message. */
-    whad::NanoPbMsg *message = new whad::generic::Verbose(msg);
-
-	/* Add notification to our message queue. */
-    Core::instance->pushMessageToQueue(message);
-
-    /* Free the notification wrapper. */
-    delete message;
-}
-
-
-/**
- * @brief   Create a WHAD notification message from a received packet.
- *
- * @param[in]   packet  Pointer to a received `Packet` object.
- * @retval      Pointer to a `whad::NanoPbMsg` ready to be sent to host
- */
-
-whad::NanoPbMsg *Controller::buildMessageFromPacket(Packet* packet) {
-  whad::NanoPbMsg *message = NULL;
-
   if (packet->getPacketType() == BLE_PACKET_TYPE) {
     BLEPacket *blePacket = static_cast<BLEPacket*>(packet);
-
-    /* Craft a BLE Raw PDU packet notification. */
-    message = new whad::ble::RawPdu(
+    whad::ble::RawPdu message(
         blePacket->getChannel(),
         blePacket->getRssi(),
         blePacket->getConnectionHandle(),
@@ -71,37 +30,29 @@ whad::NanoPbMsg *Controller::buildMessageFromPacket(Packet* packet) {
         false,
         false
     );
+    Core::instance->pushMessageToQueue(&message, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, packet->getTimestamp());
   }
   else if (packet->getPacketType() == DOT15D4_PACKET_TYPE) {
     Dot15d4Packet *dot15d4Packet = static_cast<Dot15d4Packet*>(packet);
-
-    /* Craft a Dot15d4 raw PDU notification. */
-    whad::dot15d4::Dot15d4Packet packet(
+    whad::dot15d4::Dot15d4Packet dot15d4RawPacket(
         dot15d4Packet->getChannel(),
         dot15d4Packet->getPacketBuffer()+1,
         dot15d4Packet->getPacketSize()-3,
         dot15d4Packet->getFCS()
     );
-    packet.addLqi(dot15d4Packet->getLQI());
-    packet.addFcsValidity(dot15d4Packet->isCrcValid());
-    packet.addRssi(dot15d4Packet->getRssi());
-    packet.addTimestamp(dot15d4Packet->getTimestamp());
-    message = new whad::dot15d4::RawPduReceived(packet);
+    dot15d4RawPacket.addLqi(dot15d4Packet->getLQI());
+    dot15d4RawPacket.addFcsValidity(dot15d4Packet->isCrcValid());
+    dot15d4RawPacket.addRssi(dot15d4Packet->getRssi());
+    dot15d4RawPacket.addTimestamp(dot15d4Packet->getTimestamp());
+    whad::dot15d4::RawPduReceived message(dot15d4RawPacket);
+    Core::instance->pushMessageToQueue(&message, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, packet->getTimestamp());
   }
   else if (packet->getPacketType() == ESB_PACKET_TYPE) {
     ESBPacket *esbPacket = static_cast<ESBPacket*>(packet);
-    whad::unifying::RawPduReceived *uniRawPduRecvd = NULL;
-
-    /* Specific processing if ESB packet contains Logitech Unifying data. */
     if (esbPacket->isUnifying())
     {
-        /* Create a Unifying packet from ESBPacket. */
-        whad::unifying::PDU packet(esbPacket->getPacketBuffer(), esbPacket->getPacketSize());
-
-        /* Create a Unifying address. */
+        whad::unifying::PDU pdu(esbPacket->getPacketBuffer(), esbPacket->getPacketSize());
         whad::unifying::UnifyingAddress address(esbPacket->getAddress(), 5);
-
-        /* Create a Logitech Unifying packet. */
         whad::unifying::UnifyingPacket uniPacket(
             esbPacket->getChannel(),
             esbPacket->getPacketBuffer(),
@@ -110,51 +61,28 @@ whad::NanoPbMsg *Controller::buildMessageFromPacket(Packet* packet) {
             esbPacket->getRssi(),
             esbPacket->getTimestamp()
         );
-
-        /* Add CRC validity if provided. */
         uniPacket.addCrcValidity(esbPacket->isCrcValid());
-
-        /* Create a RawPacketReceived notification. */
-        uniRawPduRecvd = new whad::unifying::RawPduReceived(uniPacket);
-        uniRawPduRecvd->addAddress(address);
-
-        /* Send our RawPacketReceived notification. */
-        message = dynamic_cast<whad::NanoPbMsg*>(uniRawPduRecvd);
+        whad::unifying::RawPduReceived message(uniPacket);
+        message.addAddress(address);
+        Core::instance->pushMessageToQueue(&message, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, packet->getTimestamp());
     }
     else
     {
-        whad::esb::RawPacketReceived *esbRawPacketRecvd = NULL;
-
-        /* Create an ESB packet from ESBPacket. */
-        whad::esb::Packet packet(esbPacket->getPacketBuffer(), esbPacket->getPacketSize());
-
-        /* Extract ESB address. */
+        whad::esb::Packet pdu(esbPacket->getPacketBuffer(), esbPacket->getPacketSize());
         whad::esb::EsbAddress address(esbPacket->getAddress(), 5);
-
-        /* Create a RawPacketReceived notification. */
-        esbRawPacketRecvd = new whad::esb::RawPacketReceived(esbPacket->getChannel(), packet);
-
-        /* Set RSSI, CRC validity, timestamp and address. */
-        esbRawPacketRecvd->setRssi(esbPacket->getRssi());
-        esbRawPacketRecvd->setCrcValidity(esbPacket->isCrcValid());
-        esbRawPacketRecvd->setTimestamp(esbPacket->getTimestamp());
-        esbRawPacketRecvd->setAddress(address);
-
-        /* Notification. */
-        message = dynamic_cast<whad::NanoPbMsg*>(esbRawPacketRecvd);
+        whad::esb::RawPacketReceived message(esbPacket->getChannel(), pdu);
+        message.setRssi(esbPacket->getRssi());
+        message.setCrcValidity(esbPacket->isCrcValid());
+        message.setTimestamp(esbPacket->getTimestamp());
+        message.setAddress(address);
+        Core::instance->pushMessageToQueue(&message, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, packet->getTimestamp());
     }
   }
   else if (packet->getPacketType() == GENERIC_PACKET_TYPE) {
     GenericPacket* genPacket = static_cast<GenericPacket*>(packet);
-
-    /* Create PHY packet. */
     whad::phy::Packet phyPacket(genPacket->getPacketBuffer(), genPacket->getPacketSize());
-
-    /* Create a PHY timestamp from packet timestamp. */
     whad::phy::Timestamp pktTimestamp(packet->getTimestamp()/1000000, packet->getTimestamp()%1000000);
-
-    /* Created a PHY packet notification. */
-    message = new whad::phy::PacketReceived(
+    whad::phy::PacketReceived message(
         (2400000000 + packet->getChannel()*1000000),
         packet->getRssi(),
         pktTimestamp,
@@ -165,7 +93,21 @@ whad::NanoPbMsg *Controller::buildMessageFromPacket(Packet* packet) {
 				genPacket->getDeviation(),
 				genPacket->getModulation()
     );
+    Core::instance->pushMessageToQueue(&message, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, packet->getTimestamp());
   }
+}
 
-  return message;
+
+/**
+ * @brief   Send debug message to the host.
+ *
+ * @param[in]   msg     Pointer to a text string to send as a debug message
+ */
+
+void Controller::sendDebug(const char* msg) {
+    /* Craft a verbose message. */
+    whad::generic::Verbose message(msg);
+
+	/* Add notification to our message queue. */
+    Core::instance->pushMessageToQueue(&message, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, 0);
 }

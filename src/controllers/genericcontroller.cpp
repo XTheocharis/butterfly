@@ -275,11 +275,8 @@ void GenericController::setEnergyDetectionConfiguration() {
 void GenericController::sendJammingReport(uint32_t timestamp) {
     /* Craft and enqueue jamming report. */
     whad::phy::Timestamp ts(timestamp/1000, (timestamp%1000)*1000);
-    whad::NanoPbMsg *notification = new whad::phy::Jammed(ts);
-    Core::instance->pushMessageToQueue(notification);
-
-    /* Free notification wrapper. */
-    delete notification;
+    whad::phy::Jammed notification(ts);
+    Core::instance->pushMessageToQueue(&notification, MESSAGE_POOL_TRAFFIC_STREAM_EVENT, timestamp);
 }
 
 void GenericController::sendEnergyDetectionReport(uint32_t timestamp, uint8_t sample) {
@@ -325,9 +322,10 @@ void GenericController::onReceive(uint32_t timestamp, uint8_t size, uint8_t *buf
 
   }
   
-  GenericPacket *pkt = new GenericPacket(buffer,size,timestamp,0x00,channel,rssi,crcValue, preamble, this->preambleSize, deviation, datarate, whad::phy::ModulationGFSK, little);
-  this->addPacket(pkt);
-  delete pkt;
+  GenericPacket pkt(buffer,size,timestamp,0x00,channel,rssi,crcValue, preamble, this->preambleSize, deviation, datarate, whad::phy::ModulationGFSK, little);
+  if (pkt.isValid()) {
+    this->addPacket(&pkt);
+  }
 }
 
 void GenericController::onJam(uint32_t timestamp) {
