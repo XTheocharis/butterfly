@@ -81,7 +81,9 @@ extern "C" {
 #define CLUE_NEOPIXEL           NRF_GPIO_PIN_MAP(0,16)
 
 #define CLUE_SPEAKER            NRF_GPIO_PIN_MAP(1,0)
-#define CLUE_SPEAKER_PWM_INSTANCE 0
+/* PWM1 drives the speaker (see src/output/buzzer.cpp). PWM0 is owned by the
+ * NeoPixel driver (src/led.cpp). The two peripherals cannot share an instance. */
+#define CLUE_SPEAKER_PWM_INSTANCE 1
 
 #define CLUE_LSM6DS33_IRQ       NRF_GPIO_PIN_MAP(1,6)
 #define CLUE_APDS9960_IRQ       NRF_GPIO_PIN_MAP(0,9)

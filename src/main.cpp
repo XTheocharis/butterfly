@@ -6,7 +6,7 @@
 #include "nrf.h"
 #include "core_cm4.h"
 
-#define SD_INFO_ADDR    0x1000
+#define SD_INFO_ADDR    0x3000
 #define SD_MAGIC        0x51B1E5DB
 #define APP_VTOR_ADDR   0x26000
 

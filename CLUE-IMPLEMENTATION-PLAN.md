@@ -1,5 +1,21 @@
 # CLUE Complete Platform Implementation Plan
 
+> **⚠ SUPERSEDED DETAILS — read the code first.**
+> This document is the original design spec. The following specifics were
+> updated during implementation and the code is authoritative:
+> - **SDK**: §2.2 says "Build CLUE against nRF5 SDK 15.3.0" — **stale**.
+>   All four repos build every target (including BOARD_CLUE) against
+>   **nRF5 SDK 17.1.0_ddde560**. See `Makefile`, `.github/workflows/compile.yml`.
+> - **GPREGRET2 one-shot values**: §2.3 says 0xB1 raw / 0xB2 BLE — **stale**.
+>   The actual values in `src/runtime.h` are **0xC1 raw / 0xC2 BLE**
+>   (deliberately distinct from the bootloader's GPREGRET commands
+>   0xB1/0xA8/0x4E/0x57/0x6D to avoid collision if both ever coexist).
+> - **SoftDevice info struct address**: `main.cpp` now checks the SD magic at
+>   **0x3000** (not 0x1000 — see `src/ble/ble_eval.h` for the canonical layout).
+>
+> Design intent, runtime model, pin assignments, scheduling rules, and
+> anti-patterns below remain authoritative.
+
 ## 1. Purpose and Success Criteria
 
 Extend Butterfly's Adafruit CLUE target into a complete, board-gated platform that exposes useful onboard hardware, supports a native BLE HID remote, and preserves unrestricted raw-WHAD radio behavior.
