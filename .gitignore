@@ -3,5 +3,13 @@
 build/
 dist/
 
+# Host test build artifacts (compiled ELF test binaries + ASan objects).
+# Sources (test_*.c, test_*.cpp, test_*.h) are kept tracked via negation.
+tests/host/test_*
+!tests/host/test_*.c
+!tests/host/test_*.cpp
+!tests/host/test_*.h
+tests/host/*.asan.o
+
 # OMO orchestrator state
 .omo/
