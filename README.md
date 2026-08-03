@@ -27,7 +27,7 @@ The related paper is [available here](https://laas.hal.science/hal-03193297v2/fi
 
 ## What's different on the `clue` branch
 
-This is the `XTheocharis/butterfly` fork (branch `clue`) tracking `upstream/whad-team/butterfly#main`. The branch adds a complete **Adafruit CLUE (nRF52840)** platform on top of the existing PCA10059 and MDK-DONGLE targets, gated behind `BOARD_CLUE` so existing builds are byte-for-byte unchanged. 22 commits ahead of upstream/main; merge base is `6ce96ed` (release/v1.1.5, 2026-05-13).
+This is the `XTheocharis/butterfly` fork (branch `clue`) tracking `upstream/whad-team/butterfly#main`. The branch adds a complete **Adafruit CLUE (nRF52840)** platform on top of the existing PCA10059 and MDK-DONGLE targets, gated behind `BOARD_CLUE` so existing builds are byte-for-byte unchanged.
 
 ### CLUE platform
 - `config/clue/` — `clue.ld` linker (app origin 0x26000, RAM origin 0x20002260), 7190-line `sdk_config.h` (SoftDevice S140 v6, BLE HIDS, Peer Manager, FDS, CC310 crypto, QSPI, PDM, TWIM1, PWM0/1, SAADC), `custom_board.h` pin map, `check_singletap.sh` post-link guard (rejects single-tap-bypass magic at flash 0x26200).
