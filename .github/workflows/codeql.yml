@@ -1,0 +1,85 @@
+name: "CodeQL"
+
+# CodeQL security scanning for the C/C++ firmware sources. CodeQL
+# intercepts compiler invocations during the build, so the ARM
+# toolchain + Nordic SDK must be installed before the make step runs
+# (autobuild cannot auto-detect an embedded cross-compile).
+#
+# Findings surface in the GitHub Security tab. They do NOT fail this
+# workflow by default — the analyze step only fails on action errors,
+# not on query results.
+
+on:
+  push:
+    branches: [ "main", "clue" ]
+  pull_request:
+    branches: [ "main", "clue" ]
+  schedule:
+    - cron: '23 4 * * 1'  # weekly Monday scan
+
+jobs:
+  analyze:
+    name: Analyze (cpp)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      security-events: write   # required to upload CodeQL results
+      actions: read            # required for private repos (not used here)
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'cpp' ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # Default suite: security-extended provides deeper coverage than
+          # security-and-quality for embedded firmware without the noisy
+          # maintainability queries.
+          queries: security-extended
+
+      - name: Install ARM Toolchain
+        run: |
+          mkdir .toolchain
+          curl -L --fail -o arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz \
+            https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz
+          printf '%s  %s\n' \
+            '8f6903f8ceb084d9227b9ef991490413014d991874a1e34074443c2a72b14dbd' \
+            'arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz' | sha256sum -c -
+          tar xf arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz -C .toolchain
+          rm -rf arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz
+
+      - name: Install Nordic SDK
+        run: |
+          mkdir .sdk
+          curl -L --fail -o nrf5_sdk_17.1.0_ddde560.zip \
+            https://nsscprodmedia.blob.core.windows.net/prod/software-and-other-downloads/sdks/nrf5/binaries/nrf5_sdk_17.1.0_ddde560.zip
+          printf '%s  %s\n' \
+            '5bfe38e744c39fd7f30e10077ba12df306ef91f368894795d6a3e7a62dc68061' \
+            'nrf5_sdk_17.1.0_ddde560.zip' | sha256sum -c -
+          unzip -q nrf5_sdk_17.1.0_ddde560.zip -d .sdk
+          rm -rf nrf5_sdk_17.1.0_ddde560.zip
+          rm -rf .sdk/nRF5_SDK_17.1.0_ddde560/components/toolchain/gcc/Makefile.posix
+          printf "GNU_INSTALL_ROOT ?= $(pwd)/.toolchain/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin/\nGNU_VERSION ?= 14.3.1\nGNU_PREFIX ?= arm-none-eabi\n" \
+            > .sdk/nRF5_SDK_17.1.0_ddde560/components/toolchain/gcc/Makefile.posix
+
+      - name: Build (BOARD_CLUE)
+        # Single platform is sufficient for security analysis — the same
+        # src/ tree is compiled for all three targets. CodeQL captures
+        # the cross-compiler invocations during this make.
+        run: make PLATFORM=BOARD_CLUE SDK_ROOT=$(pwd)/.sdk/nRF5_SDK_17.1.0_ddde560
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
