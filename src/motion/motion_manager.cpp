@@ -255,4 +255,28 @@ MotionManager::CalibResult MotionManager::tickCalibration(
 	return CALIB_RESULT_CONTINUE;
 }
 
+bool MotionManager::serializeCalibration(CalibTarget target,
+                                         uint8_t *out, uint8_t out_size,
+                                         uint8_t *out_len) const
+{
+	if (out == nullptr || out_len == nullptr) return false;
+	*out_len = 0;
+
+	if (target == CALIB_IMU) {
+		uint8_t n = imu_calib_serialize(&m_imuCalib,
+		                                IMU_VARIANT_LSM6DS33,
+		                                out, out_size);
+		if (n == 0) return false;
+		*out_len = n;
+		return true;
+	}
+	if (target == CALIB_MAG) {
+		uint8_t n = mag_calib_serialize(&m_magCalib, out, out_size);
+		if (n == 0) return false;
+		*out_len = n;
+		return true;
+	}
+	return false;
+}
+
 #endif /* BOARD_CLUE */

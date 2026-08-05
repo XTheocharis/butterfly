@@ -123,6 +123,15 @@ public:
 	bool isCalibrationBusy() const { return m_calibTarget != CALIB_NONE; }
 	CalibTarget getCalibrationTarget() const { return m_calibTarget; }
 
+	/* Serialize the most recent calibration result for the given target
+	 * into the caller-supplied buffer. Returns false and writes 0 to
+	 * *out_len if no calibration has been collected for that target or
+	 * the buffer is too small. The IMU variant is fixed to LSM6DS33
+	 * (the only IMU populated on the CLUE). */
+	bool serializeCalibration(CalibTarget target,
+	                          uint8_t *out, uint8_t out_size,
+	                          uint8_t *out_len) const;
+
 	/* Access owned subsystems (read-only). */
 	const Fusion &fusion() const { return m_fusion; }
 	const AirMouse &airMouse() const { return m_airMouse; }

@@ -205,6 +205,11 @@ private:
 
     /* Dispatch a decoded APDS gesture to the ProfileManager (if wired). */
     void dispatchApdsToProfiles(apds9960_gesture_t g);
+
+    /* Serialize the just-completed calibration for the given target and
+     * persist it via CalibManager. No-op when storage is not adopted —
+     * CalibManager handles that gracefully. */
+    void persistCalibrationResult(MotionManager::CalibTarget target);
 #endif
 
     /* Send a CommandResult response with the given code. */

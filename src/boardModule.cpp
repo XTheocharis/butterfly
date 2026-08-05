@@ -810,7 +810,7 @@ void BoardModule::handleGetCalibration(uint32_t requestId,
 	cal.crc32 = 0;
 
 #ifdef BOARD_CLUE
-	/* Try loading from persisted storage if adopted (Todo 30).
+	/* Try loading from persisted storage if adopted.
 	 * Volatile (in-progress) calibration takes precedence — if
 	 * none, fall through to persisted. The load validates CRC and
 	 * value ranges before returning data. */
@@ -828,9 +828,11 @@ void BoardModule::handleGetCalibration(uint32_t requestId,
 		}
 
 		if (kind == CALIB_KIND_IMU) {
-			loaded = false; /* loadImu via manager when wired */
+			loaded = m_calib.loadImu((uint8_t)req.sensor_id,
+			                         blob, &blob_len);
 		} else if (kind == CALIB_KIND_MAG) {
-			loaded = false; /* loadMag via manager when wired */
+			loaded = m_calib.loadMag((uint8_t)req.sensor_id,
+			                         blob, &blob_len);
 		}
 
 		if (loaded && blob_len > 0) {
@@ -1983,12 +1985,15 @@ void BoardModule::tick(void)
 		/* Calibration is driven by injected IMU/mag samples already
 		 * cached inside MotionManager — pass nullptr to use the most
 		 * recent cached samples via the manager's own feed path. */
+		MotionManager::CalibTarget target =
+		    m_motion.getCalibrationTarget();
 		MotionManager::CalibResult cr =
 		    m_motion.tickCalibration(nullptr, nullptr, &progress);
 		uint32_t now_ms = (uint32_t)(now_us / 1000ull);
 		bool emit_progress = ((now_ms - m_calibEmitMs) >= 500u);
 		if (cr == MotionManager::CALIB_RESULT_DONE_OK) {
 			board_motion_calib_complete(&m_calibState);
+			persistCalibrationResult(target);
 			sendCommandResult(m_calibRequestId,
 			                  board_BoardCommand_Calibrate,
 			                  board_BoardResultCode_SUCCESS);
@@ -2137,6 +2142,26 @@ void BoardModule::dispatchApdsToProfiles(apds9960_gesture_t g)
 
 	(void)m_profiles->dispatchInput(pressed, src, false);
 	(void)m_profiles->dispatchInput(!pressed, src, false);
+}
+
+void BoardModule::persistCalibrationResult(MotionManager::CalibTarget target)
+{
+	if (target == MotionManager::CALIB_NONE) return;
+
+	uint8_t blob[CALIB_BLOB_MAX];
+	uint8_t blob_len = 0;
+	if (!m_motion.serializeCalibration(target, blob, sizeof(blob),
+	                                   &blob_len)) {
+		return;
+	}
+
+	if (target == MotionManager::CALIB_IMU) {
+		(void)m_calib.storeImu((uint8_t)m_calibSensorId,
+		                       blob, blob_len);
+	} else if (target == MotionManager::CALIB_MAG) {
+		(void)m_calib.storeMag((uint8_t)m_calibSensorId,
+		                       blob, blob_len);
+	}
 }
 
 /* ---- Dashboard widget ----------------------------------------------- */
