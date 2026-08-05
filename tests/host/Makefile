@@ -90,7 +90,10 @@ FOUNDATION_BINS := test_runtime test_pinreg test_timebase \
 		   test_buzzer \
 		   test_gatt \
 		   test_security \
-		   test_advertising
+		   test_advertising \
+		   test_ble_controller \
+		   test_radio_eval \
+		   test_core_eval
 
 .PHONY: all test test-sanitize test-fail-demo foundation list clean
 
@@ -210,6 +213,21 @@ test_apds9960: test_apds9960.cpp test_framework.c
 # Calibration persistence test links calib_eval.c + journal eval via mock_flash.
 test_calib: test_calib.cpp test_framework.c mocks/mock_flash.c
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -I../../src/storage $< test_framework.c mocks/mock_flash.c -o $@
+
+# BLE controller eval test textually includes blecontroller_eval.c (pure-C).
+test_ble_controller: test_ble_controller.cpp test_framework.c \
+                     ../../src/controllers/blecontroller_eval.c
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -I../../src/controllers $< test_framework.c -o $@
+
+# Radio eval test textually includes radio_eval.c (pure-C).
+test_radio_eval: test_radio_eval.cpp test_framework.c \
+                 ../../src/radio_eval.c
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $< test_framework.c -o $@
+
+# Core eval test textually includes core_eval.c (pure-C).
+test_core_eval: test_core_eval.cpp test_framework.c \
+                ../../src/core_eval.c
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $< test_framework.c -o $@
 
 # Run every test_*.c binary. Fails fast on first failure.
 test: $(TEST_BINS) $(TEST_CBINS)
