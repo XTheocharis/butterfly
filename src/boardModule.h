@@ -20,6 +20,11 @@
 #ifdef BOARD_CLUE
 #include "motion/motion_manager.h"
 #include "ble/profiles_eval.h"
+#include "storage/qspi.h"
+#include "storage/qspi_journal.h"
+#include "storage/calib.h"
+#include "audio/pdm.h"
+#include "sensors/sensor_drivers.h"
 #endif
 
 class Core;
@@ -97,6 +102,23 @@ private:
                            const board_SpiTransferRequest &req);
     void handleReleasePin(uint32_t requestId,
                           const board_ReleasePinRequest &req);
+    void handleGpioConfigure(uint32_t requestId,
+                             const board_GpioConfigureRequest &req);
+    void handleGpioRead(uint32_t requestId,
+                        const board_GpioReadRequest &req);
+    void handleGpioWrite(uint32_t requestId,
+                         const board_GpioWriteRequest &req);
+    void handleAdcRead(uint32_t requestId,
+                        const board_AdcReadRequest &req);
+
+    /* === STORAGE HANDLERS (Todo 28) === */
+    void handleStorageInfo(uint32_t requestId);
+    void handleStorageAdopt(uint32_t requestId,
+                            const board_StorageAdoptRequest &req);
+    void handleStorageReadLog(uint32_t requestId,
+                              const board_StorageReadLogRequest &req);
+    void handleStorageEraseLog(uint32_t requestId,
+                               const board_StorageEraseLogRequest &req);
 
     /* === MOTION HANDLERS (Todo 19) === */
     void handleListSensors(uint32_t requestId,
@@ -129,12 +151,39 @@ private:
     uint32_t m_calibRequestId;
     uint32_t m_calibSensorId;
     uint32_t m_calibEmitMs;
+
+    /* === STORAGE SUBSYSTEM (Todo 28) ===
+     * QSPI NOR manager + journal + calibration/runtime persistence.
+     * Construction is unconditional; init() is conditional on a
+     * PINREG_GROUP_QSPI lease (granted by main.cpp's pinreg_init). */
+    QspiManager   m_qspi;
+    QspiJournal   m_journal;
+    CalibManager  m_calib;
+
+    /* === PDM MICROPHONE (Todo 9 — RawPcmDiagnostics capture) ===
+     * Owns the nrfx_pdm driver + metric window + PCM capture ring.
+     * init() is called from the BoardModule constructor; DMA sampling
+     * is started on first PCM request (or audio enable) and stopped
+     * when both go inactive. */
+    PdmMicrophone m_pdm;
+
+    /* === I2C SENSOR DRIVERS (T20/T21) ===
+     * Aggregates the 5 onboard sensor wrappers (IMU, mag, BMP280,
+     * SHT31D, APDS9960). begin() is called from the BoardModule
+     * constructor after the I2C bus was initialized in main.cpp;
+     * tick() is driven from BoardModule::tick() each iteration. The
+     * motion-sensor wrappers (IMU/mag/APDS-gesture) feed parsed
+     * samples into BoardModule::inject* which forward to
+     * MotionManager; the env/color/proximity wrappers cache their
+     * latest sample for handleReadSensor. */
+    SensorDrivers m_sensors;
 #endif
 
     /* === AUDIO STATE (Todo 26) === */
     uint8_t m_audioGainReg;
     bool    m_audioEnabled;
     uint32_t m_rawPcmRequestId;
+    uint32_t m_rawPcmSequence;
 
     /* Helper: populate a board_SensorDescriptor from eval table. */
     void populateDescriptor(board_SensorDescriptor *out,

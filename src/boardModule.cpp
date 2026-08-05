@@ -21,11 +21,18 @@
 
 #ifdef BOARD_CLUE
 #include "ble/profiles.h"
+#include "ble/ble_runtime.h"
+#include "ble/advertising.h"
+#include "ble/bond.h"
 #include "ble/profiles_eval.c"
 #include "storage/calib.h"
+#include "storage/qspi.h"
+#include "storage/qspi_journal.h"
 #include "output/buzzer.h"
 #include "expert/i2c.h"
 #include "expert/spi.h"
+#include "expert/gpio.h"
+#include "expert/adc.h"
 #include "sensors/apds9960.h"
 #endif
 
@@ -38,6 +45,12 @@
 #include "expert/expert_force.c"
 #ifdef BOARD_CLUE
 #include "motion/rotation_gesture_eval.c"
+#endif
+
+#ifdef BOARD_CLUE
+/* File-scope buzzer instance shared between handleSetOutput
+ * (startTone/stopTone) and BoardModule::tick (tick → auto-stop). */
+static Buzzer s_buzzer;
 #endif
 
 /* ---- BoardModule class ------------------------------------------------ */
@@ -72,6 +85,39 @@ BoardModule::BoardModule(Core *core)
 		(void)runtime_request_switch(target);
 	};
 	m_motion.setRotationSwitchCallback(switch_cb, nullptr);
+
+	/* === STORAGE INIT (Todo 28) ===
+	 * Acquire the QSPI pin group and probe the NOR chip. If the chip
+	 * is already adopted (committed superblock present), bring the
+	 * journal and CalibManager online so runtime persistence works.
+	 * Failure is non-fatal: storage commands return NOT_ADOPTED or
+	 * NOT_IMPLEMENTED when the manager was not initialized. */
+	pinreg_token_t qspi_lease = PINREG_TOKEN_INVALID;
+	if (pinreg_acquire_group(PINREG_GROUP_QSPI, PINREG_OWNER_QSPI,
+	                         nullptr, &qspi_lease) == PINREG_OK) {
+		if (m_qspi.init(qspi_lease) && m_qspi.isAdopted()) {
+			if (m_journal.init(qspi_lease)) {
+				m_calib.init(&m_journal);
+				calib_set_global_manager(&m_calib);
+			}
+		}
+	}
+
+	/* PDM microphone init acquires PINREG_GROUP_PDM (P0.00/P0.01) and
+	 * configures nrfx_pdm but does NOT start sampling. Sampling starts
+	 * on first audio-enable or RawPcmDiagnostics request. Init failure
+	 * is non-fatal — audio commands will surface BUSY. */
+	(void)m_pdm.init();
+
+	/* === I2C SENSOR DRIVERS (T21) ===
+	 * main.cpp already initialized the TWIM1 backend + i2cBus and
+	 * probed all 5 onboard sensors before constructing Core. Wire
+	 * the inject callbacks (IMU/mag/APDS-gesture → MotionManager)
+	 * then begin() each present sensor's async config FSM. The
+	 * pin-group lease was acquired by main.cpp and is stored inside
+	 * i2cbus_init; SensorDrivers::init does not re-acquire it. */
+	m_sensors.setListener(this);
+	(void)m_sensors.init(timebase_now_us(), 0);
 #endif
 }
 
@@ -212,6 +258,27 @@ void BoardModule::processMessage(whad::board::BoardMsg &boardMsg)
 	/* === END OUTPUT HANDLERS (Todo 27) === */
 
 	/* === EXPERT I/O HANDLERS (Todo 32) === */
+	case whad::board::GpioConfigureMsg: {
+		uint32_t requestId = 0;
+		board_GpioConfigureRequest req = {};
+		whad_board_gpio_configure_parse(rawMsg, &requestId, &req);
+		handleGpioConfigure(requestId, req);
+		break;
+	}
+	case whad::board::GpioReadMsg: {
+		uint32_t requestId = 0;
+		board_GpioReadRequest req = {};
+		whad_board_gpio_read_parse(rawMsg, &requestId, &req);
+		handleGpioRead(requestId, req);
+		break;
+	}
+	case whad::board::GpioWriteMsg: {
+		uint32_t requestId = 0;
+		board_GpioWriteRequest req = {};
+		whad_board_gpio_write_parse(rawMsg, &requestId, &req);
+		handleGpioWrite(requestId, req);
+		break;
+	}
 	case whad::board::I2cTransferMsg: {
 		uint32_t requestId = 0;
 		board_I2cTransferRequest req = {};
@@ -233,6 +300,43 @@ void BoardModule::processMessage(whad::board::BoardMsg &boardMsg)
 		handleReleasePin(requestId, req);
 		break;
 	}
+	case whad::board::AdcReadMsg: {
+		uint32_t requestId = 0;
+		board_AdcReadRequest req = {};
+		whad_board_adc_read_parse(rawMsg, &requestId, &req);
+		handleAdcRead(requestId, req);
+		break;
+	}
+	/* === STORAGE HANDLERS (Todo 28) === */
+	case whad::board::StorageInfoMsg: {
+		uint32_t requestId = 0;
+		board_StorageInfoRequest req = {};
+		whad_board_storage_info_parse(rawMsg, &requestId, &req);
+		handleStorageInfo(requestId);
+		break;
+	}
+	case whad::board::StorageAdoptMsg: {
+		uint32_t requestId = 0;
+		board_StorageAdoptRequest req = {};
+		whad_board_storage_adopt_parse(rawMsg, &requestId, &req);
+		handleStorageAdopt(requestId, req);
+		break;
+	}
+	case whad::board::StorageReadLogMsg: {
+		uint32_t requestId = 0;
+		board_StorageReadLogRequest req = {};
+		whad_board_storage_read_log_parse(rawMsg, &requestId, &req);
+		handleStorageReadLog(requestId, req);
+		break;
+	}
+	case whad::board::StorageEraseLogMsg: {
+		uint32_t requestId = 0;
+		board_StorageEraseLogRequest req = {};
+		whad_board_storage_erase_log_parse(rawMsg, &requestId, &req);
+		handleStorageEraseLog(requestId, req);
+		break;
+	}
+	/* === END STORAGE HANDLERS (Todo 28) === */
 	/* === END EXPERT I/O HANDLERS (Todo 32) === */
 	default: {
 		uint32_t requestId = rawMsg->msg.board.request_id;
@@ -250,7 +354,7 @@ void BoardModule::processMessage(whad::board::BoardMsg &boardMsg)
 
 void BoardModule::handleGetBoardInfo(uint32_t requestId)
 {
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -287,27 +391,40 @@ void BoardModule::handleGetBoardInfo(uint32_t requestId)
 
 void BoardModule::handleGetRuntimeConfig(uint32_t requestId)
 {
-	Message *resp = messagePoolAllocateMessage(NULL);
-	if (resp == NULL) {
-		return;
+	board_runtime_state_t state = {};
+
+	state.active_runtime = boardmodule_rt_to_proto(runtime_get_selected());
+
+#ifdef BOARD_CLUE
+	/* Persisted runtime mode — backed by QSPI calib store (CLUE only).
+	 * Returns RUNTIME_STORE_UNAVAILABLE when storage is not adopted. */
+	runtime_mode_t persisted = RUNTIME_RAW_WHAD;
+	runtime_store_result_t sr = calib_runtime_store_read(&persisted);
+	state.persistence_available = (sr == RUNTIME_STORE_OK);
+	state.persisted_runtime = state.persistence_available
+		? boardmodule_rt_to_proto(persisted)
+		: BOARD_RT_UNKNOWN;
+
+	/* BLE-HID state — meaningful only when BleRuntime is constructed
+	 * (RUNTIME_BLE_HID mode). In raw-WHAD mode the pointer is null. */
+	BleRuntime *ble = m_core->getBleRuntime();
+	if (ble != nullptr) {
+		BleRuntimeState bstate = ble->getState();
+		state.ble_advertising = (bstate == BleRuntimeState::Advertising);
+		state.ble_connected  = (bstate == BleRuntimeState::Connected);
+		state.ble_pairable   = (ble->getSecurity() != nullptr);
+		/* bond_count stays 0: BondStorage exposes no count accessor yet. */
 	}
+#endif
 
-	board_RuntimeConfigResponse cfg;
-	memset(&cfg, 0, sizeof(cfg));
+	board_RuntimeConfigResponse cfg = {};
+	boardmodule_eval_get_runtime_config(&state, &cfg);
 
-	cfg.active_runtime = static_cast<board_RuntimeMode>(
-		boardmodule_rt_to_proto(runtime_get_selected()));
-	cfg.persisted_runtime = BOARD_RT_UNKNOWN;
-	cfg.persistence_available = false;
-	cfg.ble_advertising = false;
-	cfg.ble_pairable = false;
-	cfg.ble_connected = false;
-	cfg.bond_count = 0;
-	cfg.event_log_filter = 0;
-	cfg.raw_packet_log_filter = 0;
-
-	whad_board_runtime_config(resp, requestId, &cfg);
-	m_core->pushMessageToQueue(resp);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+	if (resp != NULL) {
+		whad_board_runtime_config(resp, requestId, &cfg);
+		m_core->pushMessageToQueue(resp);
+	}
 }
 
 void BoardModule::handleSetRuntimeMode(uint32_t requestId,
@@ -339,8 +456,31 @@ void BoardModule::handleSetRuntimeConfig(uint32_t requestId,
 		hasPersistedRuntime = req.operation.update.has_persisted_runtime;
 	}
 
+#ifdef BOARD_CLUE
+	BleRuntime *ble = m_core->getBleRuntime();
+	bool ble_active = (ble != nullptr);
+
 	uint32_t code = boardmodule_eval_set_runtime_config(
-		req.which_operation, hasPersistedRuntime);
+		req.which_operation, hasPersistedRuntime, ble_active);
+
+	if (code == board_BoardResultCode_SUCCESS && ble_active) {
+		if (req.which_operation == BOARD_CFG_OP_OPEN_PAIRING) {
+			AdvertisingManager *adv = ble->getAdvertising();
+			if (adv != nullptr) {
+				(void)adv->start();
+			}
+		} else if (req.which_operation == BOARD_CFG_OP_CLEAR_BONDS) {
+			BondStorage *bond = ble->getBond();
+			if (bond != nullptr) {
+				bond->requestForget();
+				(void)bond->confirmForget();
+			}
+		}
+	}
+#else
+	uint32_t code = boardmodule_eval_set_runtime_config(
+		req.which_operation, hasPersistedRuntime, false);
+#endif
 
 	sendCommandResult(requestId,
 		board_BoardCommand_SetRuntimeConfig,
@@ -383,7 +523,7 @@ void BoardModule::populateDescriptor(board_SensorDescriptor *out,
 void BoardModule::handleListSensors(uint32_t requestId,
                                     const board_ListSensorsRequest &req)
 {
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -422,7 +562,7 @@ void BoardModule::handleReadSensor(uint32_t requestId,
 		return;
 	}
 
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -481,7 +621,7 @@ void BoardModule::handleConfigureStream(uint32_t requestId,
 		return;
 	}
 
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -550,7 +690,7 @@ void BoardModule::handleCalibrate(uint32_t requestId,
 
 	/* Nonterminal "accepted" result — client knows calibration started.
 	 * Firmware emits progress + terminal CommandResult from tick(). */
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 #ifdef BOARD_CLUE
 		board_motion_calib_complete(&m_calibState);
@@ -584,7 +724,7 @@ void BoardModule::handleGetCalibration(uint32_t requestId,
 		return;
 	}
 
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -646,7 +786,7 @@ void BoardModule::emitSensorSample(uint32_t sensor_id, uint32_t sequence,
                                    uint64_t timestamp_us, uint32_t status,
                                    const int32_t *values, uint32_t value_count)
 {
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -722,7 +862,7 @@ void BoardModule::emitStreamSamples(void)
 void BoardModule::sendCommandResult(uint32_t requestId,
 	board_BoardCommand command, board_BoardResultCode result)
 {
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -742,7 +882,7 @@ void BoardModule::sendCommandResult(uint32_t requestId,
 
 void BoardModule::handleGetInputState(uint32_t requestId)
 {
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -801,7 +941,7 @@ void BoardModule::handleConfigureInput(uint32_t requestId,
 void BoardModule::handleRemoteProfileGet(uint32_t requestId,
                                          const board_RemoteProfileGetRequest &req)
 {
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -936,7 +1076,7 @@ void BoardModule::handleAudioConfigure(uint32_t requestId,
 		m_audioGainReg = PDM_GAIN_TO_REG(actualGainDbX2 / 2);
 	}
 
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp == NULL) {
 		return;
 	}
@@ -951,37 +1091,47 @@ void BoardModule::handleAudioConfigure(uint32_t requestId,
 	m_core->pushMessageToQueue(resp);
 }
 
+/* PDM_EVAL_* codes are local numeric copies (pdm_eval.h:72-76) that do NOT
+ * match BoardResultCode values — bare casts produce semantic collisions
+ * (e.g. PDM_EVAL_BUSY=6 → NOT_ADOPTED=6). This explicit remap keeps the
+ * host-visible result codes correct. */
+static board_BoardResultCode pdm_eval_to_board_result(uint32_t pdm_code)
+{
+	switch (pdm_code) {
+	case PDM_EVAL_SUCCESS:         return board_BoardResultCode_SUCCESS;
+	case PDM_EVAL_INVALID_ARG:     return board_BoardResultCode_INVALID_ARGUMENT;
+	case PDM_EVAL_PERMISSION:      return board_BoardResultCode_PERMISSION_DENIED;
+	case PDM_EVAL_BUSY:            return board_BoardResultCode_BUSY;
+	case PDM_EVAL_NOT_IMPLEMENTED: return board_BoardResultCode_NOT_IMPLEMENTED;
+	default:                       return board_BoardResultCode_INTERNAL_ERROR;
+	}
+}
+
 void BoardModule::handleRawPcmDiagnostics(uint32_t requestId,
                                           const board_RawPcmDiagnosticsRequest &req)
 {
-	runtime_mode_t mode = runtime_get_selected();
-
-	static pdm_pcm_state_t pcmState;
-	pdm_pcm_init(&pcmState);
-
-	/* radio_idle: BoardModule has no direct radio-state accessor; pass true
-	 * (conservative) so the eval layer gates solely on RAW_WHAD mode. A future
-	 * todo wiring Core's Radio state can refine this to reject PCM while the
-	 * radio is actively sniffing. */
-	uint32_t code = pdm_pcm_start(&pcmState, mode, /*radio_idle=*/true, requestId,
-	                              req.duration_ms, req.chunk_size);
+	/* Delegate to PdmMicrophone: pdm_pcm_start validates the runtime +
+	 * radio_idle precondition and clamps chunk_size; startRawPcm ensures
+	 * DMA sampling is running and flushes the capture ring. */
+	/* radio_idle=true: PDM and RADIO are independent peripherals on nRF52840
+	 * (separate EasyDMA channels), so audio capture can proceed regardless
+	 * of radio activity. */
+	uint32_t code = m_pdm.startRawPcm(requestId, req.duration_ms,
+	                                  req.chunk_size, /*radio_idle=*/true);
 
 	if (code != board_BoardResultCode_SUCCESS) {
 		sendCommandResult(requestId,
-			board_BoardCommand_RawPcmDiagnostics,
-			(board_BoardResultCode)code);
+		                  board_BoardCommand_RawPcmDiagnostics,
+		                  pdm_eval_to_board_result(code));
 		return;
 	}
 
 	m_rawPcmRequestId = requestId;
+	m_rawPcmSequence  = 0;
 
-	/* Send nonterminal "accepted" CommandResult, then chunks.
-	 * In this implementation, we have no live PCM capture buffer (PDM
-	 * driver is not wired in this todo). Send an empty chunk sequence
-	 * with eof=true to indicate the diagnostics completed (no data).
-	 * When the PDM firmware driver is integrated, this will stream
-	 * real captured PCM in ≤40-byte chunks. */
-	Message *accepted = messagePoolAllocateMessage(NULL);
+	/* Nonterminal "accepted" ack — the actual audio chunks are drained
+	 * from the capture ring and pushed from tick() as DMA buffers fill. */
+	Message *accepted = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (accepted != NULL) {
 		board_CommandResult cr;
 		memset(&cr, 0, sizeof(cr));
@@ -990,23 +1140,6 @@ void BoardModule::handleRawPcmDiagnostics(uint32_t requestId,
 		cr.terminal = false;
 		whad_board_command_result(accepted, requestId, &cr);
 		m_core->pushMessageToQueue(accepted);
-	}
-
-	/* Final chunk with eof=true, empty pcm, total=0. */
-	Message *finalChunk = messagePoolAllocateMessage(NULL);
-	if (finalChunk != NULL) {
-		board_AudioChunk chunk;
-		memset(&chunk, 0, sizeof(chunk));
-		chunk.sequence = 0;
-		chunk.offset = 0;
-		chunk.count = 0;
-		chunk.pcm.size = 0;
-		chunk.eof = true;
-		chunk.total = 0;
-		chunk.result = board_BoardResultCode_SUCCESS;
-
-		whad_board_audio_chunk(finalChunk, requestId, &chunk);
-		m_core->pushMessageToQueue(finalChunk);
 	}
 }
 
@@ -1028,7 +1161,6 @@ void BoardModule::handleSetOutput(uint32_t requestId,
 	}
 
 #ifdef BOARD_CLUE
-	static Buzzer s_buzzer;
 	LedModule *led = m_core->getLedModule();
 	DisplayModule *disp = m_core->getDisplayModule();
 
@@ -1128,7 +1260,7 @@ void BoardModule::handleI2cTransfer(uint32_t requestId,
 	}
 
 	if (code != board_BoardResultCode_SUCCESS) {
-		Message *resp = messagePoolAllocateMessage(NULL);
+		Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 		if (resp != NULL) {
 			board_I2cTransferResponse r = {};
 			r.result = code;
@@ -1165,7 +1297,7 @@ void BoardModule::handleI2cTransfer(uint32_t requestId,
 	default:                         resp_code = board_BoardResultCode_NOT_IMPLEMENTED; break;
 	}
 
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp != NULL) {
 		board_I2cTransferResponse r = {};
 		r.result = resp_code;
@@ -1182,7 +1314,7 @@ void BoardModule::handleI2cTransfer(uint32_t requestId,
 		m_core->pushMessageToQueue(resp);
 	}
 #else
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp != NULL) {
 		board_I2cTransferResponse r = {};
 		r.result = board_BoardResultCode_NOT_IMPLEMENTED;
@@ -1208,7 +1340,7 @@ void BoardModule::handleSpiTransfer(uint32_t requestId,
 	}
 
 	if (code != board_BoardResultCode_SUCCESS) {
-		Message *resp = messagePoolAllocateMessage(NULL);
+		Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 		if (resp != NULL) {
 			board_SpiTransferResponse r = {};
 			r.result = code;
@@ -1242,7 +1374,7 @@ void BoardModule::handleSpiTransfer(uint32_t requestId,
 	default:                         resp_code = board_BoardResultCode_NOT_IMPLEMENTED; break;
 	}
 
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp != NULL) {
 		board_SpiTransferResponse r = {};
 		r.result = resp_code;
@@ -1259,7 +1391,7 @@ void BoardModule::handleSpiTransfer(uint32_t requestId,
 		m_core->pushMessageToQueue(resp);
 	}
 #else
-	Message *resp = messagePoolAllocateMessage(NULL);
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 	if (resp != NULL) {
 		board_SpiTransferResponse r = {};
 		r.result = board_BoardResultCode_NOT_IMPLEMENTED;
@@ -1269,15 +1401,432 @@ void BoardModule::handleSpiTransfer(uint32_t requestId,
 #endif
 }
 
+void BoardModule::handleGpioConfigure(uint32_t requestId,
+                                      const board_GpioConfigureRequest &req)
+{
+	board_BoardResultCode code = board_BoardResultCode_SUCCESS;
+
+	/* Validate proto enums (reject UNKNOWN sentinel values). */
+	expert_gpio_dir_t dir = EXPERT_GPIO_DIR_INPUT;
+	switch (req.direction) {
+	case board_GpioDirection_GPIO_INPUT:  dir = EXPERT_GPIO_DIR_INPUT;  break;
+	case board_GpioDirection_GPIO_OUTPUT: dir = EXPERT_GPIO_DIR_OUTPUT; break;
+	default:
+		code = board_BoardResultCode_INVALID_ARGUMENT;
+		break;
+	}
+
+	expert_gpio_pull_t pull = EXPERT_GPIO_PULL_NONE;
+	if (code == board_BoardResultCode_SUCCESS) {
+		switch (req.pull) {
+		case board_GpioPull_GPIO_PULL_NONE: pull = EXPERT_GPIO_PULL_NONE;     break;
+		case board_GpioPull_GPIO_PULL_UP:   pull = EXPERT_GPIO_PULL_PULLUP;   break;
+		case board_GpioPull_GPIO_PULL_DOWN: pull = EXPERT_GPIO_PULL_PULLDOWN; break;
+		default:
+			code = board_BoardResultCode_INVALID_ARGUMENT;
+			break;
+		}
+	}
+
+	/* Validate D-pin is in the analog-capable alias table. */
+	if (code == board_BoardResultCode_SUCCESS &&
+	    expert_eval_alias_by_d((uint8_t)req.pin) == NULL) {
+		code = board_BoardResultCode_INVALID_ARGUMENT;
+	}
+
+	expert_token_t token = EXPERT_TOKEN_INVALID;
+	bool leased = false;
+
+#ifdef BOARD_CLUE
+	if (code == board_BoardResultCode_SUCCESS) {
+		expert_result_t er = gpio_expert_acquire((uint8_t)req.pin,
+		                                          PINREG_OWNER_GPIO_USER,
+		                                          &token);
+		if (er == EXPERT_OK) {
+			leased = true;
+			expert_gpio_config_t cfg = {};
+			cfg.dir   = dir;
+			cfg.pull  = pull;
+			cfg.drive = EXPERT_GPIO_DRIVE_S0S1;
+			cfg.sense = EXPERT_GPIO_SENSE_NONE;
+			er = gpio_expert_configure(token, PINREG_OWNER_GPIO_USER, &cfg);
+			if (er == EXPERT_OK && dir == EXPERT_GPIO_DIR_OUTPUT) {
+				er = gpio_expert_write(token, PINREG_OWNER_GPIO_USER,
+				                       req.initial_value ? 1 : 0);
+			}
+		}
+
+		code = expert_eval_to_board_result(er);
+	}
+#else
+	if (code == board_BoardResultCode_SUCCESS)
+		code = board_BoardResultCode_NOT_IMPLEMENTED;
+#endif
+
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+	if (resp != NULL) {
+		board_GpioConfigureResponse r = {};
+		r.result = code;
+		r.pin    = req.pin;
+		if (leased && code == board_BoardResultCode_SUCCESS) {
+			r.has_lease       = true;
+			r.lease.resource   = board_ResourceKind_RESOURCE_GPIO_PIN;
+			r.lease.instance   = req.pin;
+			r.lease.generation = (uint32_t)token;
+			r.lease.owner      = (uint32_t)PINREG_OWNER_GPIO_USER;
+		}
+		whad_board_gpio_configured(resp, requestId, &r);
+		m_core->pushMessageToQueue(resp);
+	}
+}
+
+void BoardModule::handleGpioRead(uint32_t requestId,
+                                 const board_GpioReadRequest &req)
+{
+	board_BoardResultCode code = board_BoardResultCode_SUCCESS;
+	int value = 0;
+
+#ifdef BOARD_CLUE
+	if (!req.has_lease) {
+		code = board_BoardResultCode_INVALID_ARGUMENT;
+	} else {
+		expert_token_t token = (expert_token_t)req.lease.generation;
+		expert_result_t er = gpio_expert_read(token,
+		                                      PINREG_OWNER_GPIO_USER,
+		                                      &value);
+		code = expert_eval_to_board_result(er);
+	}
+#else
+	code = board_BoardResultCode_NOT_IMPLEMENTED;
+#endif
+
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+	if (resp != NULL) {
+		board_GpioReadResponse r = {};
+		r.result = code;
+		r.pin    = req.pin;
+		r.value  = (value != 0);
+		whad_board_gpio_value(resp, requestId, &r);
+		m_core->pushMessageToQueue(resp);
+	}
+}
+
+void BoardModule::handleGpioWrite(uint32_t requestId,
+                                  const board_GpioWriteRequest &req)
+{
+	board_BoardResultCode code;
+
+#ifdef BOARD_CLUE
+	if (!req.has_lease) {
+		code = board_BoardResultCode_INVALID_ARGUMENT;
+	} else {
+		expert_token_t token = (expert_token_t)req.lease.generation;
+		expert_result_t er = gpio_expert_write(token,
+		                                       PINREG_OWNER_GPIO_USER,
+		                                       req.value ? 1 : 0);
+		code = expert_eval_to_board_result(er);
+	}
+#else
+	code = board_BoardResultCode_NOT_IMPLEMENTED;
+#endif
+
+	/* No GpioWriteResponse in the proto — use generic CommandResult. */
+	sendCommandResult(requestId, board_BoardCommand_GpioWrite, code);
+}
+
 void BoardModule::handleReleasePin(uint32_t requestId,
                                    const board_ReleasePinRequest &req)
 {
-	(void)req;
+	board_BoardResultCode code;
 
-	sendCommandResult(requestId,
-		board_BoardCommand_ReleasePin,
-		board_BoardResultCode_SUCCESS);
+#ifdef BOARD_CLUE
+	/* The expert_token_t issued at acquire time is carried in the lease
+	 * generation field. Dispatch on the resource kind to the owning
+	 * expert subsystem. */
+	expert_token_t token = (expert_token_t)req.lease.generation;
+
+	switch (req.resource) {
+	case board_ResourceKind_RESOURCE_GPIO_PIN: {
+		expert_result_t er = gpio_expert_release(token);
+		code = expert_eval_to_board_result(er);
+		break;
+	}
+	case board_ResourceKind_RESOURCE_ADC_CHANNEL: {
+		expert_result_t er = adc_expert_release(token);
+		code = expert_eval_to_board_result(er);
+		break;
+	}
+	default:
+		code = board_BoardResultCode_INVALID_ARGUMENT;
+		break;
+	}
+#else
+	(void)req;
+	code = board_BoardResultCode_NOT_IMPLEMENTED;
+#endif
+
+	sendCommandResult(requestId, board_BoardCommand_ReleasePin, code);
 }
+
+void BoardModule::handleAdcRead(uint32_t requestId,
+                                const board_AdcReadRequest &req)
+{
+	/* channel = Arduino D-pin number. Must be analog-capable
+	 * (one of the 8 pins in EXPERT_ALIASES). samples is ignored —
+	 * adc_expert_read_oneshot does a single conversion. */
+	board_BoardResultCode code = board_BoardResultCode_SUCCESS;
+
+	if (req.channel > 0xFFu) {
+		code = board_BoardResultCode_INVALID_ARGUMENT;
+	} else if (expert_eval_alias_by_d((uint8_t)req.channel) == NULL) {
+		code = board_BoardResultCode_INVALID_ARGUMENT;
+	}
+
+	if (code != board_BoardResultCode_SUCCESS) {
+		Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+		if (resp != NULL) {
+			board_AdcReadResponse r = {};
+			r.result = code;
+			r.channel = req.channel;
+			whad_board_adc_value(resp, requestId, &r);
+			m_core->pushMessageToQueue(resp);
+		}
+		return;
+	}
+
+#ifdef BOARD_CLUE
+	uint16_t out_mv = 0;
+	expert_adc_status_t adc_stat = EXPERT_ADC_OK;
+	expert_result_t er = adc_expert_read_oneshot(
+		(uint8_t)req.channel, PINREG_OWNER_GPIO_USER,
+		&out_mv, &adc_stat);
+
+	board_BoardResultCode resp_code = expert_eval_to_board_result(er);
+	if (er == EXPERT_OK && adc_stat == EXPERT_ADC_SATURATED) {
+		resp_code = board_BoardResultCode_OVERFLOW;
+	}
+
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+	if (resp != NULL) {
+		board_AdcReadResponse r = {};
+		r.result = resp_code;
+		r.channel = req.channel;
+		r.millivolts = (resp_code == board_BoardResultCode_SUCCESS ||
+		                resp_code == board_BoardResultCode_OVERFLOW)
+			? (int32_t)out_mv : 0;
+		/* raw not exposed by the oneshot API; callers needing it must
+		 * use the retained acquire/configure/read/release path. */
+		r.raw = 0;
+		whad_board_adc_value(resp, requestId, &r);
+		m_core->pushMessageToQueue(resp);
+	}
+#else
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+	if (resp != NULL) {
+		board_AdcReadResponse r = {};
+		r.result = board_BoardResultCode_NOT_IMPLEMENTED;
+		r.channel = req.channel;
+		whad_board_adc_value(resp, requestId, &r);
+		m_core->pushMessageToQueue(resp);
+	}
+#endif
+}
+
+/* === STORAGE HANDLER IMPLEMENTATIONS (Todo 28) === */
+
+void BoardModule::handleStorageInfo(uint32_t requestId)
+{
+#ifdef BOARD_CLUE
+	uint8_t  jedec[3] = {0, 0, 0};
+	uint32_t capacity = 0;
+	qspi_state_t qs = QSPI_ST_UNADOPTED;
+	uint8_t  nonce[QSPI_NONCE_SIZE];
+	m_qspi.getStorageInfo(jedec, &capacity, &qs, nonce);
+
+	const journal_sb_info_t *sb = (m_qspi.isAdopted() && m_journal.isReady())
+	                              ? m_journal.sbInfo() : nullptr;
+
+	board_StorageState proto_state;
+	switch (qs) {
+	case QSPI_ST_ADOPTED:
+		proto_state = board_StorageState_STORAGE_ADOPTED; break;
+	case QSPI_ST_UNADOPTED:
+		proto_state = board_StorageState_STORAGE_UNADOPTED; break;
+	case QSPI_ST_PROBING:
+	case QSPI_ST_VALIDATED:
+	case QSPI_ST_NONCE_ISSUED:
+	case QSPI_ST_CONFIRMED:
+	case QSPI_ST_ERASING_SUPERBLOCK:
+	case QSPI_ST_ERASING_REMAINING:
+	case QSPI_ST_VERIFYING:
+	case QSPI_ST_WRITING_SUPERBLOCK:
+	case QSPI_ST_COMMITTING:
+		proto_state = board_StorageState_STORAGE_ADOPTING; break;
+	default:
+		proto_state = board_StorageState_STORAGE_FAULT; break;
+	}
+
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+	if (resp == NULL) return;
+
+	board_StorageInfoResponse r;
+	memset(&r, 0, sizeof(r));
+	r.state         = proto_state;
+	r.capacity_bytes = capacity;
+	r.used_bytes     = (sb != nullptr) ? sb->log_write_off : 0u;
+	r.log_records    = (sb != nullptr) ? sb->log_record_count : 0u;
+	r.erase_size     = 0u;
+	memcpy(r.jedec_id, jedec, sizeof(jedec));
+	whad_board_storage_status(resp, requestId, &r);
+	m_core->pushMessageToQueue(resp);
+#else
+	sendCommandResult(requestId,
+	                  board_BoardCommand_StorageInfo,
+	                  board_BoardResultCode_NOT_IMPLEMENTED);
+#endif
+}
+
+void BoardModule::handleStorageAdopt(uint32_t requestId,
+                                     const board_StorageAdoptRequest &req)
+{
+#ifdef BOARD_CLUE
+	/* confirm_cli mirrors the host's --yes-really-adopt-and-erase flag;
+	 * the menu path is not driven from this handler. */
+	bool confirm_cli = req.force ? true : false;
+	const uint8_t *nonce_bytes = (const uint8_t *)&req.confirm_nonce;
+	const size_t   nonce_len   = sizeof(req.confirm_nonce);
+
+	bool started = m_qspi.beginAdoption(nonce_bytes, nonce_len,
+	                                    /*confirm_menu=*/false,
+	                                    confirm_cli);
+	board_BoardResultCode code = started
+		? board_BoardResultCode_SUCCESS
+		: board_BoardResultCode_BUSY;
+	sendCommandResult(requestId,
+	                  board_BoardCommand_StorageAdopt,
+	                  code);
+#else
+	(void)req;
+	sendCommandResult(requestId,
+	                  board_BoardCommand_StorageAdopt,
+	                  board_BoardResultCode_NOT_IMPLEMENTED);
+#endif
+}
+
+void BoardModule::handleStorageReadLog(uint32_t requestId,
+                                       const board_StorageReadLogRequest &req)
+{
+#ifdef BOARD_CLUE
+	if (!m_qspi.isAdopted() || !m_journal.isReady()) {
+		Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+		if (resp == NULL) return;
+		board_LogChunk r;
+		memset(&r, 0, sizeof(r));
+		r.result = board_BoardResultCode_NOT_ADOPTED;
+		r.cursor = req.cursor;
+		r.eof    = true;
+		whad_board_log_chunk(resp, requestId, &r);
+		m_core->pushMessageToQueue(resp);
+		return;
+	}
+
+	journal_read_cursor_t cur;
+	memset(&cur, 0, sizeof(cur));
+	cur.read_off = req.cursor;
+
+	/* Bound the response burst to avoid starving the message pool.
+	 * Each chunk can carry up to 900 bytes; the host re-requests with
+	 * an updated cursor if eof was not reached. */
+	const uint32_t MAX_CHUNKS_PER_REQ = 4u;
+	const uint16_t chunk_cap = (req.max_bytes > 0 &&
+	                            req.max_bytes <= sizeof(board_LogChunk_data_t))
+	                           ? (uint16_t)req.max_bytes
+	                           : (uint16_t)sizeof(board_LogChunk_data_t);
+
+	uint8_t buf[sizeof(board_LogChunk_data_t)];
+	uint32_t seq = 0u;
+
+	for (uint32_t i = 0; i < MAX_CHUNKS_PER_REQ; i++) {
+		uint16_t actual = 0;
+		bool     eof    = false;
+		bool ok = m_journal.readLog(&cur, buf, chunk_cap, &actual, &eof);
+		if (!ok || actual == 0u) {
+			/* Emit a terminal empty chunk so the host sees a clear
+			 * end-of-stream signal even when the journal is empty. */
+			Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+			if (resp == NULL) return;
+			board_LogChunk r;
+			memset(&r, 0, sizeof(r));
+			r.sequence = seq++;
+			r.cursor   = cur.read_off;
+			r.eof      = true;
+			r.result   = board_BoardResultCode_SUCCESS;
+			whad_board_log_chunk(resp, requestId, &r);
+			m_core->pushMessageToQueue(resp);
+			break;
+		}
+
+		Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+		if (resp == NULL) return;
+		board_LogChunk r;
+		memset(&r, 0, sizeof(r));
+		r.sequence = seq++;
+		r.cursor   = req.cursor;
+		r.offset   = cur.read_off;
+		r.count    = actual;
+		r.data.size = actual;
+		memcpy(r.data.bytes, buf, actual);
+		r.eof      = eof;
+		r.total    = (m_journal.sbInfo() != nullptr)
+		             ? m_journal.sbInfo()->log_record_count : 0u;
+		r.result   = board_BoardResultCode_SUCCESS;
+		whad_board_log_chunk(resp, requestId, &r);
+		m_core->pushMessageToQueue(resp);
+
+		if (eof) break;
+	}
+#else
+	(void)req;
+	sendCommandResult(requestId,
+	                  board_BoardCommand_StorageReadLog,
+	                  board_BoardResultCode_NOT_IMPLEMENTED);
+#endif
+}
+
+void BoardModule::handleStorageEraseLog(uint32_t requestId,
+                                        const board_StorageEraseLogRequest &req)
+{
+#ifdef BOARD_CLUE
+	(void)req;  /* confirm_nonce retained for future menu-driven flow. */
+
+	if (!m_qspi.isAdopted() || !m_journal.isReady()) {
+		sendCommandResult(requestId,
+		                  board_BoardCommand_StorageEraseLog,
+		                  board_BoardResultCode_NOT_ADOPTED);
+		return;
+	}
+
+	if (m_journal.eraseState() != JOURNAL_ERASE_IDLE) {
+		sendCommandResult(requestId,
+		                  board_BoardCommand_StorageEraseLog,
+		                  board_BoardResultCode_BUSY);
+		return;
+	}
+
+	bool started = m_journal.beginEraseLog();
+	sendCommandResult(requestId,
+	                  board_BoardCommand_StorageEraseLog,
+	                  started ? board_BoardResultCode_SUCCESS
+	                          : board_BoardResultCode_BUSY);
+#else
+	(void)req;
+	sendCommandResult(requestId,
+	                  board_BoardCommand_StorageEraseLog,
+	                  board_BoardResultCode_NOT_IMPLEMENTED);
+#endif
+}
+
+/* === END STORAGE HANDLER IMPLEMENTATIONS (Todo 28) === */
 
 /* === END EXPERT I/O HANDLER IMPLEMENTATIONS (Todo 32) === */
 
@@ -1334,6 +1883,12 @@ void BoardModule::tick(void)
 #ifdef BOARD_CLUE
 	uint64_t now_us = timebase_now_us();
 
+	/* Drive the I2C sensor wrappers (IMU, mag, BMP280, SHT31D,
+	 * APDS9960). Completion callbacks call injectImu / injectMag /
+	 * injectApdsGesture, which feed MotionManager's cache before
+	 * the motion tick below consumes it. */
+	m_sensors.tick(now_us);
+
 	/* Drive the motion subsystem one step. The rotation-gesture FSM
 	 * returns an event when state changes; we surface those to the
 	 * dashboard. */
@@ -1347,6 +1902,8 @@ void BoardModule::tick(void)
 	if (g != APDS9960_GESTURE_NONE) {
 		dispatchApdsToProfiles(g);
 	}
+
+	s_buzzer.tick();
 
 	/* Advance async calibration if active. */
 	if (m_motion.isCalibrationBusy()) {
@@ -1372,7 +1929,7 @@ void BoardModule::tick(void)
 			m_calibEmitMs = 0;
 		} else if (emit_progress) {
 			m_calibEmitMs = now_ms;
-			Message *resp = messagePoolAllocateMessage(NULL);
+			Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
 			if (resp != NULL) {
 				board_CommandResult crp;
 				memset(&crp, 0, sizeof(crp));
@@ -1393,6 +1950,77 @@ void BoardModule::tick(void)
 	/* Register dashboard once on first tick when the display is up. */
 	if (!m_dashboardRegistered) {
 		registerDashboardPages();
+	}
+
+	/* === PDM POLL + DRAIN (Todo 9 — RawPcmDiagnostics) ===
+	 * poll() pulls one DMA buffer from the ISR-ready queue and feeds
+	 * both the metric window (sensor 13 audio level) and, when a raw
+	 * PCM session is active, the capture ring. We then drain the ring
+	 * in ≤20-sample chunks and push AudioChunk messages until either
+	 * the ring empties (wait for next DMA) or the session ends (eof). */
+	m_pdm.poll();
+
+	if (m_rawPcmRequestId != 0 && m_pdm.isPcmActive()) {
+		int16_t scratch[PDM_PCM_CHUNK_MAX_SAMPLES];
+
+		while (m_pdm.isPcmActive()) {
+			uint32_t got = m_pdm.drainPcmSamples(scratch,
+			                                     PDM_PCM_CHUNK_MAX_SAMPLES);
+			if (got == 0) {
+				break;
+			}
+
+			/* Trim to remaining session samples so the final chunk
+			 * does not overshoot the requested duration. */
+			uint32_t remaining = m_pdm.pcmTotalSamples() -
+			                     m_pdm.pcmSentSamples();
+			if (got > remaining) {
+				got = remaining;
+			}
+
+			uint32_t offset_samples = m_pdm.pcmSentSamples();
+			bool complete = m_pdm.accountPcmDrained(got);
+
+			Message *chunkMsg = messagePoolAllocateForDomain(DOMAIN_BOARD);
+			if (chunkMsg == NULL) {
+				/* Pool exhausted — try again next tick. */
+				break;
+			}
+
+			board_AudioChunk chunk;
+			memset(&chunk, 0, sizeof(chunk));
+			chunk.sequence = m_rawPcmSequence++;
+			chunk.offset   = offset_samples * sizeof(int16_t);
+			chunk.count    = got * sizeof(int16_t);
+			chunk.pcm.size = got * sizeof(int16_t);
+			memcpy(chunk.pcm.bytes, scratch, chunk.pcm.size);
+			chunk.eof      = complete;
+			chunk.total    = m_pdm.pcmTotalSamples() * sizeof(int16_t);
+			chunk.result   = board_BoardResultCode_SUCCESS;
+
+			whad_board_audio_chunk(chunkMsg, m_rawPcmRequestId, &chunk);
+			m_core->pushMessageToQueue(chunkMsg);
+
+			if (complete) {
+				m_rawPcmRequestId = 0;
+				m_rawPcmSequence  = 0;
+				break;
+			}
+		}
+	}
+
+	/* === STORAGE TICK (Todo 28) ===
+	 * Advance the async adoption + journal erase state machines. Both
+	 * feed the watchdog between long erase sectors. Erase is only
+	 * driven when not IDLE so the journal FSM owns the busy flag. */
+	if (m_qspi.isPresent()) {
+		m_qspi.tick();
+	}
+	if (m_qspi.isAdopted() && m_journal.isReady()) {
+		m_journal.tick();
+		if (m_journal.eraseState() != JOURNAL_ERASE_IDLE) {
+			m_journal.tickEraseLog();
+		}
 	}
 #else
 	(void)0;
