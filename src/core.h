@@ -16,9 +16,10 @@
 #include "messagePool.h"
 #include "runtime.h"
 
-#ifdef BOARD_CLUE
+ #ifdef BOARD_CLUE
 #include "boardModule.h"
 #include "menu.h"
+class BleRuntime;
 #endif
 
 #include "controller.h"
@@ -31,11 +32,6 @@
 
 class SerialComm;
 
-#ifdef BOARD_CLUE
-/* Forward declaration — full definition lives in ble/ble_runtime.h
- * (kept out of core.h so BLE SDK headers don't leak into non-CLUE TUs). */
-class BleRuntime;
-#endif
 
 extern "C" void core_send_bytes(uint8_t *p_bytes, int size);
 
@@ -60,13 +56,11 @@ class Core {
 		GenericController *genericController;
 		Controller* currentController;
 
-#ifdef BOARD_CLUE
+ #ifdef BOARD_CLUE
 		BoardModule *boardModule;
 		MenuManager *menuManager;
-
-		/* BLE-HID runtime — constructed only when mode == RUNTIME_BLE_HID. */
 		BleRuntime *m_bleRuntime;
-#endif
+	#endif
 
 		runtime_mode_t m_runtimeMode;
 
@@ -84,11 +78,13 @@ class Core {
 		/* Runtime-aware accessors. */
 		runtime_mode_t getRuntimeMode(void) const;
 		bool hasRawRadio(void) const;
-#ifdef BOARD_CLUE
-		BleRuntime* getBleRuntime(void) const { return m_bleRuntime; }
-#endif
 
-		void setControllerChannel(int channel);
+ 	void setControllerChannel(int channel);
+
+#ifdef BOARD_CLUE
+		BleRuntime *getBleRuntime() { return m_bleRuntime; }
+		void setProfileManager(void *profiles) {}
+#endif
 
 		#ifdef PA_ENABLED
 			void configurePowerAmplifier(bool enabled);
@@ -100,7 +96,7 @@ class Core {
 		void sendDebug(const char* message);
 		void sendDebug(uint8_t *buffer, uint8_t size);
 
-		void processInputMessage(Message &msg);
+		void processInputMessage(Message msg);
 		void processGenericInputMessage(whad::NanoPbMsg msg);
 		void processDiscoveryInputMessage(whad::discovery::DiscoveryMsg msg);
 		void processDot15d4InputMessage(whad::dot15d4::Dot15d4Msg dot15d4Msg);

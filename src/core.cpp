@@ -4,18 +4,12 @@
 #include "nrf.h"
 #include "nrf_gpio.h"
 #include "messagePool.h"
-#include "timebase.h"
-
-#ifdef BOARD_CLUE
-#include "ble/ble_runtime.h"
-#include "platformRuntime.h"
-#endif
 
 // Global instance of Core
 Core* Core::instance = NULL;
 static Message msg;
 
-void Core::processInputMessage(Message &msg) {
+void Core::processInputMessage(Message msg) {
   whad::NanoPbMsg whadMsg(&msg);
 
   switch (whadMsg.getType())
@@ -1695,18 +1689,8 @@ Core::Core(runtime_mode_t mode) {
 
 	/* SerialComm starts the USB CDC stack from its constructor.
 	 * Must come after timer/radio so no USB interrupts can fire
-	 * while those services are mid-construction.
-	 *
-	 * In BLE mode, defer SerialComm construction to init() — after
-	 * BleRuntime::init() has enabled the SoftDevice. Constructing
-	 * SerialComm before SD is alive risks USBD power events arriving
-	 * before SD installs its SWI forwarders during
-	 * nrf_sdh_enable_request(). */
-	if (mode == RUNTIME_RAW_WHAD) {
-		this->serialModule = new SerialComm();
-	} else {
-		this->serialModule = NULL;
-	}
+	 * while those services are mid-construction. */
+	this->serialModule = new SerialComm();
 
 	/* Raw controllers — left NULL until init() in BLE mode. */
 	this->bleController = NULL;
@@ -1720,14 +1704,7 @@ Core::Core(runtime_mode_t mode) {
 #ifdef BOARD_CLUE
  	this->boardModule = new BoardModule(this);
  	this->menuManager = NULL;
-
- 	/* BLE-HID runtime — constructed only when mode == RUNTIME_BLE_HID.
- 	 * init() defers SoftDevice enable until after SerialComm exists. */
- 	if (mode == RUNTIME_BLE_HID) {
- 		this->m_bleRuntime = new BleRuntime();
- 	} else {
- 		this->m_bleRuntime = NULL;
- 	}
+ 	this->m_bleRuntime = NULL;
 #endif
 
     /* Initialize WHAD library. */
@@ -1803,19 +1780,11 @@ void Core::init() {
 #ifdef BOARD_CLUE
 	this->displayModule->init();
 	this->displayModule->drawText(4, 4, "BUTTERFLY", COLOR_CYAN, COLOR_BLACK);
-	this->displayModule->drawText(4, 16, "v1.2.0", COLOR_GRAY, COLOR_BLACK);
+ 	this->displayModule->drawText(4, 16, "v1.2.0", COLOR_GRAY, COLOR_BLACK);
 	this->displayModule->drawText(4, 32, "IDLE", COLOR_WHITE, COLOR_BLACK);
 	this->displayModule->endBootSplash();
-
-	this->menuManager = new MenuManager();
-	MenuAvailability menuAvail = menuDefaultAvailability();
-	this->menuManager->init(&menuAvail, /*render_fn=*/nullptr, /*render_ctx=*/nullptr);
-	this->menuManager->registerOnDisplay(*this->displayModule, /*page=*/1);
-
-	nrf_gpio_cfg_input(BSP_BUTTON_0, BUTTON_PULL);
+ 	nrf_gpio_cfg_input(BSP_BUTTON_0, BUTTON_PULL);
 #endif
-
-	this->boardModule->initHardware();
 
 	/* USB CDC stack is started from the SerialComm constructor (called
 	 * during Core construction above). Do NOT re-init here — double
@@ -1832,22 +1801,6 @@ void Core::init() {
 		this->genericController = new GenericController(this->getRadioModule());
 		this->radio->setController(NULL);
 	}
-#ifdef BOARD_CLUE
-	else if (m_runtimeMode == RUNTIME_BLE_HID && this->m_bleRuntime != NULL) {
-		/* Switch platformRuntime to BLE so SDK wrappers (critical sections,
-		 * NVIC, gpregret) route through sd_* SoftDevice calls instead of
-		 * the raw PRIMASK path. SoftDevice must already be alive — main.cpp
-		 * leaves SD enabled and VTOR at MBR-default for BLE boot. */
-		platform_runtime_set_mode(PLATFORM_RUNTIME_BLE);
-		this->m_bleRuntime->init();
-		this->boardModule->setProfileManager(this->m_bleRuntime->getProfiles());
-
-		/* SD is now alive with its SWI forwarders installed — safe to
-		 * start USB CDC. SerialComm was deferred from the constructor
-		 * to avoid USBD power events arriving before SD bring-up. */
-		this->serialModule = new SerialComm();
-	}
-#endif
 
 	this->currentController = NULL;
 }
@@ -1986,47 +1939,35 @@ void Core::sendVerbose(const char* data) {
 
 void Core::loop() {
     Message *message = this->popMessageFromQueue();
-#ifdef BOARD_CLUE
-	static uint32_t btnDebounce = 0;
-	static bool btnAState = true;
-	static bool backlight = true;
-#endif
 
-	while (true) {
+    /* === DIAGNOSTIC BUILD (temporary) ===
+     * Loop simplified to match known-good exactly to isolate why
+     * WHAD responses never reach the host. BOARD_CLUE per-iteration
+     * work (button sampling, menu tick, stream emit) is disabled.
+     * LED_1 (red P1.01) lights when whad_get_message succeeds.
+     * LED_2 (white P0.10) lights when whad_send_message is invoked.
+     * Original behavior can be restored from git history. */
+    bool rxEverSeen = false;
+    bool txEverSent = false;
 
-#ifdef BOARD_CLUE
-		if (btnDebounce > 0) btnDebounce--;
-		else {
-			bool btnA = nrf_gpio_pin_read(NRF_GPIO_PIN_MAP(1,2));
-			if (!btnA && btnAState) {
-				backlight = !backlight;
-				this->displayModule->setBacklight(backlight);
-				btnDebounce = 50000;
-			}
-			btnAState = btnA;
-		}
-
-		this->boardModule->tick();
-
-		if (this->m_bleRuntime != NULL) {
-			this->m_bleRuntime->process();
-		}
-		this->displayModule->flushDirty((uint32_t)timebase_now_ms(),
-		                                DISPLAY_DEFAULT_QUANTUM, false);
-
-		if (this->menuManager != NULL) {
-			this->menuManager->tick(timebase_now_us());
-		}
-#endif
+ 	while (true) {
 
 		this->serialModule->process();
 
         /* Check if we receveived a WHAD message. */
         if (whad_get_message(&msg) == WHAD_SUCCESS)
         {
+            if (!rxEverSeen) {
+                this->getLedModule()->on(LED1);
+                rxEverSeen = true;
+            }
             this->processInputMessage(msg);
         }
         if (message != NULL) {
+          if (!txEverSent) {
+              this->getLedModule()->on(LED2);
+              txEverSent = true;
+          }
           if (whad_send_message(message) == WHAD_ERROR)
           {
           }
