@@ -22,8 +22,8 @@ endif
 CWARN     := -Wall -Wextra -Wconversion -Wshadow -pedantic
 CFLAGS    ?= -std=c11 -O2 -g $(CWARN)
 CXXFLAGS  ?= -std=c++17 -O2 -g $(CWARN)
-CPPFLAGS  += -I. -I../../src -I../../whad-lib -I../../whad-lib/inc \
-	-I../../whad-lib/nanopb -I../../whad-lib/whad/protocol
+CPPFLAGS  += -I. -I../../src -I../../../whad-lib -I../../../whad-lib/inc \
+	-I../../../whad-lib/nanopb -I../../../whad-lib/whad/protocol
 
 # ASan + UBSan. -O1 keeps ASan stack traces readable.
 SANITIZE_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -O1 -g
@@ -49,7 +49,7 @@ TEST_CXX   := $(wildcard test_*.cpp)
 TEST_CBINS := $(TEST_CXX:.cpp=)
 
 # Protocol round-trip test needs nanopb + generated protobuf + Board C API.
-WHAD_DIR       := ../../whad-lib
+WHAD_DIR       := ../../../whad-lib
 NANOPB_SRCS    := $(WHAD_DIR)/nanopb/pb_common.c \
                   $(WHAD_DIR)/nanopb/pb_encode.c \
                   $(WHAD_DIR)/nanopb/pb_decode.c
@@ -87,7 +87,10 @@ FOUNDATION_BINS := test_runtime test_pinreg test_timebase \
 		   test_calib \
 		   test_apds9960 \
 		   test_pdm \
-		   test_buzzer
+		   test_buzzer \
+		   test_gatt \
+		   test_security \
+		   test_advertising
 
 .PHONY: all test test-sanitize test-fail-demo foundation list clean
 
@@ -124,6 +127,24 @@ test_foundation_protocol: test_foundation_protocol.cpp test_framework.c \
 
 # BLE runtime test links ble_eval.c (pure-C, no SDK deps).
 test_ble_runtime: test_ble_runtime.cpp test_framework.c \
+                  ../../src/ble/ble_eval.c
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -I../../src/ble $< test_framework.c \
+		../../src/ble/ble_eval.c -o $@
+
+# GATT test links gatt_eval.c + ble_eval.c (pure-C, no SDK deps).
+test_gatt: test_gatt.cpp test_framework.c \
+           ../../src/ble/gatt_eval.c ../../src/ble/ble_eval.c
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -I../../src/ble $< test_framework.c \
+		../../src/ble/gatt_eval.c ../../src/ble/ble_eval.c -o $@
+
+# Security test links security_eval.c + ble_eval.c (pure-C, no SDK deps).
+test_security: test_security.cpp test_framework.c \
+               ../../src/ble/security_eval.c ../../src/ble/ble_eval.c
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -I../../src/ble $< test_framework.c \
+		../../src/ble/security_eval.c ../../src/ble/ble_eval.c -o $@
+
+# Advertising test links ble_eval.c (pure-C, no SDK deps).
+test_advertising: test_advertising.cpp test_framework.c \
                   ../../src/ble/ble_eval.c
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -I../../src/ble $< test_framework.c \
 		../../src/ble/ble_eval.c -o $@

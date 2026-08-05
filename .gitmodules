@@ -1,4 +1,0 @@
-[submodule "whad-lib"]
-	path = whad-lib
-	url = https://github.com/XTheocharis/whad-lib.git
-	branch = clue

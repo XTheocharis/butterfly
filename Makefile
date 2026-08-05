@@ -285,7 +285,7 @@ endif
 
 
 PROJ_DIR := src
-WHAD_DIR := whad-lib
+WHAD_DIR := ../whad-lib
 #CONF_DIR := config
 $(OUTPUT_DIRECTORY)/nrf52840_xxaa.out: \
   LINKER_SCRIPT  := $(LINKER_FILE)
