@@ -1784,6 +1784,7 @@ void Core::init() {
 	this->displayModule->drawText(4, 32, "IDLE", COLOR_WHITE, COLOR_BLACK);
 	this->displayModule->endBootSplash();
  	nrf_gpio_cfg_input(BSP_BUTTON_0, BUTTON_PULL);
+	this->boardModule->initHardware();
 #endif
 
 	/* USB CDC stack is started from the SerialComm constructor (called
