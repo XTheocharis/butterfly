@@ -25,6 +25,11 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+/* Board protocol result codes (nanopb-generated). Needed by
+ * expert_eval_to_board_result() which maps expert_result_t
+ * to the Board-domain wire result code. */
+#include "whad/protocol/board/board.pb.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -179,6 +184,12 @@ typedef enum {
 	EXPERT_ERR_WRONG_OWNER    = 5,
 	EXPERT_ERR_WRONG_SESSION  = 6,
 } expert_result_t;
+
+/* Map expert_result_t → board_BoardResultCode.
+ * Shared by all Board handlers that dispatch to the GPIO/ADC expert
+ * APIs (GpioConfigure, GpioRead, GpioWrite, AdcRead, ReleasePin).
+ * Every enum value is explicitly mapped (no default fallback). */
+board_BoardResultCode expert_eval_to_board_result(expert_result_t er);
 
 /* Start a new session. Invalidates all outstanding tokens.
  * Session counter wraps at 0xFFFF → 1 (never 0). */

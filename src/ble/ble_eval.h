@@ -235,6 +235,33 @@ bool ble_ble_mode_raw_timer_check(bool timer3_started, bool timer4_started);
 #define BLE_SEC_MIN_KEY_SIZE  16u  /* 16 octets = 128 bits */
 #define BLE_SEC_MAX_KEY_SIZE  16u
 
+/* ---- Advertising-mode mapping + param-update classifier --------------- */
+
+/*
+ * The advertising.cpp SDK wrapper maps ble_adv_state_t → ble_adv_mode_t
+ * (BLE_ADV_MODE_FAST/SLOW/DIRECTED/IDLE). This returns that mapping as an
+ * integer so host tests can validate it without including SDK headers.
+ * Returns: IDLE/STOPPED→0, FAST→1, SLOW→2, DIRECTED→3.
+ */
+int ble_eval_state_to_adv_mode(ble_adv_state_t state);
+
+/* SDK error codes mirrored for host-side classifier (no SDK header needed).
+ * These are the two codes advertising.cpp:208-213 actually branches on. */
+#define BLE_EVAL_ERR_SUCCESS          0x0000u
+#define BLE_EVAL_ERR_INVALID_STATE    0x0003u
+
+typedef enum {
+	BLE_EVAL_PARAM_UPDATE_OK            = 0,  /* sd call succeeded */
+	BLE_EVAL_PARAM_UPDATE_RATE_LIMITED  = 1,  /* INVALID_STATE — host negotiating */
+	BLE_EVAL_PARAM_UPDATE_BACKOFF       = 2,  /* INVALID_STATE + no connection */
+	BLE_EVAL_PARAM_UPDATE_NO_CONNECTION = 3,  /* conn_handle invalid */
+} ble_param_update_result_t;
+
+/* Classify sd_ble_gap_conn_param_update() result.
+ * Mirrors advertising.cpp:186-216 decision logic without SDK deps. */
+ble_param_update_result_t ble_eval_classify_param_update_error(uint32_t err_code,
+                                                               bool connected);
+
 #ifdef __cplusplus
 }
 #endif

@@ -53,11 +53,33 @@ public:
 
     /* Start raw PCM diagnostics capture.
      * radio_idle must be true; the eval layer rejects otherwise.
-     * Returns BoardResultCode. */
+     * Returns BoardResultCode. On SUCCESS, also ensures the PDM hardware
+     * is sampling so the capture ring is fed by poll(). */
     uint32_t startRawPcm(uint32_t request_id, uint32_t duration_ms,
                          uint32_t chunk_size, bool radio_idle);
 
-    /* Check if a raw PCM chunk is ready. Called from poll(). */
+    /* Check if a raw PCM diagnostics session is active. */
+    bool isPcmActive(void) const { return m_pcmState.active; }
+
+    /* Drain up to max_samples captured PCM into out (contiguous write).
+     * Returns the number of samples actually written (0 if ring empty).
+     * Safe to call from thread context; the ring is fed from poll(). */
+    uint32_t drainPcmSamples(int16_t *out, uint32_t max_samples);
+
+    /* Account for samples drained from the ring this pass. Advances the
+     * session's sent_samples counter and deactivates the session when
+     * total_samples is reached. Returns true if the session is now
+     * complete (caller emits the terminal eof chunk). */
+    bool accountPcmDrained(uint32_t sample_count);
+
+    /* Cancel any active PCM session and flush the capture ring. */
+    void cancelPcm(void);
+
+    /* Total samples the active PCM session will deliver (0 if inactive). */
+    uint32_t pcmTotalSamples(void) const { return m_pcmState.total_samples; }
+
+    /* Samples already drained from the active PCM session. */
+    uint32_t pcmSentSamples(void) const { return m_pcmState.sent_samples; }
 
     /* Get latest metrics (NULL if no window completed yet). */
     const pdm_metrics_t *getLatestMetrics(void) const;

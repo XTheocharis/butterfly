@@ -45,21 +45,21 @@ The two radio runtimes remain exclusive because S140 and Butterfly's raw radio i
 
 ### 2.2 SDK and memory compatibility
 
-- Build CLUE against **nRF5 SDK 15.3.0**, matching the stock S140 6.1.1 SoftDevice. Keep existing dongle targets on SDK 17.1.
+- Build CLUE against **nRF5 SDK 17.1.0_ddde560** (updated post-implementation), matching the stock S140 6.1.1 SoftDevice.
 - Add a real CLUE-specific SDK configuration enabling TWIM1, GPIOTE, PDM, PWM0/1, QSPI, SAADC, app_timer, nrf_sdh, BLE HIDS/GATT/advertising, Peer Manager, FDS, and Device Information Service.
 - Retain application flash origin **0x26000**, flash length **0xBA000**, RAM origin **0x20002260**, and RAM length **0x3DDA0**.
 - Add link-time assertions for the application origin, application end, RAM origin, and bootloader boundary.
 - Before BLE initialization, require **SD_SIZE_GET(0) == 0x26000** and **SD_FWID_GET(0) == 0x00B6**. A mismatch displays **SOFTDEVICE MISMATCH** and permits recovery or raw-WHAD fallback without calling incompatible BLE APIs.
 
-Nordic provides the matching SDK in its [nRF5 SDK 15.x archive](https://developer.nordicsemi.com/nRF5_SDK/nRF5_SDK_v15.x.x/).
+Nordic provides the matching SDK in its [nRF5 SDK 17.x archive](https://www.nordicsemi.com/Products/Development-software/nrf5-sdk/download).
 
 ### 2.3 Automatic startup
 
 1. Initialize only common, SoftDevice-safe facilities: RTC2, buttons, TFT, USB transport, read-only QSPI probe, and persistent-configuration reader.
 2. Preserve GPREGRET value **0x57** exclusively for the existing Adafruit DFU path.
 3. Read and immediately clear GPREGRET2:
-   - **0xB1:** raw-WHAD one-shot.
-   - **0xB2:** BLE-HID one-shot.
+   - **0xC1:** raw-WHAD one-shot.
+   - **0xC2:** BLE-HID one-shot.
 4. If A+B are held for one second, enter the recovery menu.
 5. Otherwise choose the runtime in this order:
    - GPREGRET2 one-shot override.
@@ -523,7 +523,7 @@ Taking TFT pins blanks the display. Taking I²C pins stops sensors. Taking butto
 
 ### Milestone 1: Foundation
 
-- Pin CLUE to SDK 15.3.
+- Pin CLUE to SDK 17.1.
 - Add CLUE-specific SDK configuration.
 - Implement automatic runtime startup, SoftDevice validation, Timebase, controlled reboot transitions, event queues, and pin ownership.
 - Preserve existing TFT, DFU, and HFXO behavior.
@@ -576,7 +576,7 @@ Each milestone should be a separate reviewable PR or commit series. No milestone
 
 ### 14.1 Automated tests
 
-- Build CLUE against SDK 15.3 and existing targets against SDK 17.1.
+- Build all targets against SDK 17.1.
 - Keep CLUE flash below 70% of 0xBA000 and static RAM below 50% of available application RAM.
 - Unit-test all sensor register setup and scaling.
 - Test SHT CRC and published Bosch BMP280 compensation vectors.

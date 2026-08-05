@@ -29,6 +29,19 @@ static int16_t s_dma_buf[2][PDM_DMA_BUF_SAMPLES] __attribute__((aligned(4)));
 static volatile uint8_t s_ready_idx;   /* 0/1 = ready buffer, 0xFF = none */
 static volatile bool s_overrun;         /* ISR fired before previous consumed */
 
+/* ---- PCM capture ring (4 × 256-sample blocks = 1024 samples = 64ms) --
+ * Written by PdmMicrophone::poll() in thread context when a raw PCM
+ * session is active. Drained by PdmMicrophone::drainPcmSamples() from
+ * BoardModule::tick(). All indices are byte-aligned (uint8_t/uint16_t)
+ * so single-copy reads are atomic on Cortex-M4. Critical regions are
+ * still used on multi-field updates to keep the invariants tight. */
+#define PCM_RING_BLOCKS 4u
+static int16_t s_pcmRing[PCM_RING_BLOCKS][PDM_DMA_BUF_SAMPLES] __attribute__((aligned(4)));
+static volatile uint8_t  s_pcmWriteIdx;          /* next block to fill (0..3) */
+static volatile uint8_t  s_pcmReadIdx;           /* block being drained (0..3) */
+static volatile uint16_t s_pcmReadOffset;        /* samples consumed in read block */
+static volatile uint16_t s_pcmSamplesAvailable;  /* total unread samples */
+
 /* ---- PDM event handler (ISR context — minimal work) ----------------- */
 
 static void pdm_handler(nrfx_pdm_evt_t const *const p_evt)
@@ -64,6 +77,10 @@ PdmMicrophone::PdmMicrophone()
     pdm_threshold_init(&m_threshold);
     s_ready_idx = 0xFF;
     s_overrun = false;
+    s_pcmWriteIdx = 0;
+    s_pcmReadIdx = 0;
+    s_pcmReadOffset = 0;
+    s_pcmSamplesAvailable = 0;
 }
 
 bool PdmMicrophone::init(void)
@@ -165,6 +182,29 @@ void PdmMicrophone::poll(void)
         offset += consumed;
     }
 
+    /* Feed PCM capture ring when a raw PCM session is active.
+     * One full DMA buffer (256 samples = 16ms @ 16kHz) per poll() pass.
+     * If the ring is full we drop the oldest block by advancing the read
+     * pointer — preferred over stalling the DMA pipeline. */
+    if (m_pcmState.active) {
+        uint8_t widx = s_pcmWriteIdx;
+        memcpy(s_pcmRing[widx], buf,
+               PDM_DMA_BUF_SAMPLES * sizeof(int16_t));
+
+        uint8_t next_w = (uint8_t)((widx + 1u) % PCM_RING_BLOCKS);
+        s_pcmWriteIdx = next_w;
+
+        uint16_t avail = s_pcmSamplesAvailable;
+        if (avail + PDM_DMA_BUF_SAMPLES >
+            (PCM_RING_BLOCKS * PDM_DMA_BUF_SAMPLES)) {
+            /* Ring overflow: drop the oldest block by advancing read idx. */
+            s_pcmReadIdx = (uint8_t)((s_pcmReadIdx + 1u) % PCM_RING_BLOCKS);
+            s_pcmReadOffset = 0;
+            avail = (uint16_t)((PCM_RING_BLOCKS - 1u) * PDM_DMA_BUF_SAMPLES);
+        }
+        s_pcmSamplesAvailable = (uint16_t)(avail + PDM_DMA_BUF_SAMPLES);
+    }
+
     /* Detect DMA overrun (ISR fired before previous buffer was consumed). */
     if (s_overrun) {
         s_overrun = false;
@@ -207,8 +247,95 @@ uint32_t PdmMicrophone::startRawPcm(uint32_t request_id, uint32_t duration_ms,
                                     uint32_t chunk_size, bool radio_idle)
 {
     runtime_mode_t mode = runtime_get_selected();
-    return pdm_pcm_start(&m_pcmState, mode, radio_idle, request_id,
-                         duration_ms, chunk_size);
+    uint32_t code = pdm_pcm_start(&m_pcmState, mode, radio_idle, request_id,
+                                  duration_ms, chunk_size);
+    if (code != PDM_EVAL_SUCCESS) {
+        return code;
+    }
+
+    /* Ensure PDM hardware is sampling so poll() can feed the ring.
+     * Caller is responsible for having called init() once at startup;
+     * if init failed earlier we surface BUSY (hardware unavailable). */
+    if (!m_initialized) {
+        pdm_pcm_cancel(&m_pcmState);
+        return PDM_EVAL_BUSY;
+    }
+    if (!m_running) {
+        if (!start()) {
+            pdm_pcm_cancel(&m_pcmState);
+            return PDM_EVAL_BUSY;
+        }
+    }
+
+    /* Flush any stale capture ring state so the new session starts clean. */
+    s_pcmWriteIdx = 0;
+    s_pcmReadIdx = 0;
+    s_pcmReadOffset = 0;
+    s_pcmSamplesAvailable = 0;
+    return PDM_EVAL_SUCCESS;
+}
+
+uint32_t PdmMicrophone::drainPcmSamples(int16_t *out, uint32_t max_samples)
+{
+    if (out == NULL || max_samples == 0) {
+        return 0;
+    }
+
+    /* Critical region around ring index mutation. poll() writes
+     * s_pcmWriteIdx/s_pcmSamplesAvailable from the same thread context
+     * as tick(), but PRIMASK-based masking guarantees the read+update
+     * sequence here is not torn by an intervening ISR-redirected poll(). */
+    uint8_t nested = 0;
+    (void)platform_runtime_critical_region_enter(&nested);
+
+    uint32_t drained = 0;
+    while (drained < max_samples && s_pcmSamplesAvailable > 0) {
+        uint16_t in_block = (uint16_t)(PDM_DMA_BUF_SAMPLES - s_pcmReadOffset);
+        uint32_t take = (in_block < (max_samples - drained))
+                      ? in_block : (max_samples - drained);
+
+        memcpy(out + drained,
+               &s_pcmRing[s_pcmReadIdx][s_pcmReadOffset],
+               take * sizeof(int16_t));
+
+        drained += take;
+        s_pcmReadOffset = (uint16_t)(s_pcmReadOffset + take);
+        s_pcmSamplesAvailable = (uint16_t)(s_pcmSamplesAvailable - take);
+
+        if (s_pcmReadOffset >= PDM_DMA_BUF_SAMPLES) {
+            s_pcmReadOffset = 0;
+            s_pcmReadIdx = (uint8_t)((s_pcmReadIdx + 1u) % PCM_RING_BLOCKS);
+        }
+    }
+
+    (void)platform_runtime_critical_region_exit(nested);
+    return drained;
+}
+
+void PdmMicrophone::cancelPcm(void)
+{
+    pdm_pcm_cancel(&m_pcmState);
+    uint8_t nested = 0;
+    (void)platform_runtime_critical_region_enter(&nested);
+    s_pcmWriteIdx = 0;
+    s_pcmReadIdx = 0;
+    s_pcmReadOffset = 0;
+    s_pcmSamplesAvailable = 0;
+    (void)platform_runtime_critical_region_exit(nested);
+}
+
+bool PdmMicrophone::accountPcmDrained(uint32_t sample_count)
+{
+    if (!m_pcmState.active || sample_count == 0) {
+        return !m_pcmState.active;
+    }
+
+    m_pcmState.sent_samples += sample_count;
+    if (m_pcmState.sent_samples >= m_pcmState.total_samples) {
+        m_pcmState.active = false;
+        return true;
+    }
+    return false;
 }
 
 const pdm_metrics_t *PdmMicrophone::getLatestMetrics(void) const

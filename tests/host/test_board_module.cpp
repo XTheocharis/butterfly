@@ -152,15 +152,30 @@ static void test_eval_set_runtime_mode_wrong_mode(void)
 		(long long)board_BoardResultCode_WRONG_MODE, code);
 }
 
-static void test_eval_set_runtime_config_pairing_bonds_success(void)
+static void test_eval_set_runtime_config_pairing_bonds_not_implemented(void)
 {
+	/* Without an active BleRuntime, pairing/bonds are not available. */
 	long long code = boardmodule_eval_set_runtime_config(
-		BOARD_CFG_OP_OPEN_PAIRING, false);
+		BOARD_CFG_OP_OPEN_PAIRING, false, false);
+	TEST_ASSERT_EQ_INT(
+		(long long)board_BoardResultCode_NOT_IMPLEMENTED, code);
+
+	code = boardmodule_eval_set_runtime_config(
+		BOARD_CFG_OP_CLEAR_BONDS, false, false);
+	TEST_ASSERT_EQ_INT(
+		(long long)board_BoardResultCode_NOT_IMPLEMENTED, code);
+}
+
+static void test_eval_set_runtime_config_pairing_bonds_with_ble_active(void)
+{
+	/* With an active BleRuntime, pairing/bonds are available. */
+	long long code = boardmodule_eval_set_runtime_config(
+		BOARD_CFG_OP_OPEN_PAIRING, false, true);
 	TEST_ASSERT_EQ_INT(
 		(long long)board_BoardResultCode_SUCCESS, code);
 
 	code = boardmodule_eval_set_runtime_config(
-		BOARD_CFG_OP_CLEAR_BONDS, false);
+		BOARD_CFG_OP_CLEAR_BONDS, false, true);
 	TEST_ASSERT_EQ_INT(
 		(long long)board_BoardResultCode_SUCCESS, code);
 }
@@ -168,7 +183,7 @@ static void test_eval_set_runtime_config_pairing_bonds_success(void)
 static void test_eval_set_runtime_config_update_success(void)
 {
 	long long code = boardmodule_eval_set_runtime_config(
-		BOARD_CFG_OP_UPDATE, false);
+		BOARD_CFG_OP_UPDATE, false, false);
 	TEST_ASSERT_EQ_INT(
 		(long long)board_BoardResultCode_SUCCESS, code);
 }
@@ -176,16 +191,120 @@ static void test_eval_set_runtime_config_update_success(void)
 static void test_eval_set_runtime_config_update_not_adopted(void)
 {
 	long long code = boardmodule_eval_set_runtime_config(
-		BOARD_CFG_OP_UPDATE, true);
+		BOARD_CFG_OP_UPDATE, true, false);
 	TEST_ASSERT_EQ_INT(
 		(long long)board_BoardResultCode_NOT_ADOPTED, code);
 }
 
 static void test_eval_set_runtime_config_invalid(void)
 {
-	long long code = boardmodule_eval_set_runtime_config(99, false);
+	long long code = boardmodule_eval_set_runtime_config(99, false, false);
 	TEST_ASSERT_EQ_INT(
 		(long long)board_BoardResultCode_INVALID_ARGUMENT, code);
+}
+
+static void test_eval_get_runtime_config_all_zero(void)
+{
+	board_runtime_state_t st = {0};
+	board_RuntimeConfigResponse resp;
+
+	boardmodule_eval_get_runtime_config(&st, &resp);
+	TEST_ASSERT_EQ_INT((long long)BOARD_RT_UNKNOWN,
+		(long long)resp.active_runtime);
+	TEST_ASSERT_EQ_INT((long long)BOARD_RT_UNKNOWN,
+		(long long)resp.persisted_runtime);
+	TEST_ASSERT_EQ_INT(0, (int)resp.persistence_available);
+	TEST_ASSERT_EQ_INT(0, (int)resp.ble_advertising);
+	TEST_ASSERT_EQ_INT(0, (int)resp.ble_pairable);
+	TEST_ASSERT_EQ_INT(0, (int)resp.ble_connected);
+	TEST_ASSERT_EQ_INT(0, (int)resp.bond_count);
+	TEST_ASSERT_EQ_INT(0, (int)resp.event_log_filter);
+	TEST_ASSERT_EQ_INT(0, (int)resp.raw_packet_log_filter);
+}
+
+static void test_eval_get_runtime_config_all_populated(void)
+{
+	board_runtime_state_t st = {
+		.active_runtime       = BOARD_RT_RAW_WHAD,
+		.persisted_runtime    = BOARD_RT_BLE_HID,
+		.persistence_available = true,
+		.ble_advertising      = true,
+		.ble_pairable         = true,
+		.ble_connected        = true,
+		.bond_count           = 3,
+		.event_log_filter     = 7,
+		.raw_packet_log_filter = 9,
+	};
+	board_RuntimeConfigResponse resp;
+
+	boardmodule_eval_get_runtime_config(&st, &resp);
+	TEST_ASSERT_EQ_INT((long long)BOARD_RT_RAW_WHAD,
+		(long long)resp.active_runtime);
+	TEST_ASSERT_EQ_INT((long long)BOARD_RT_BLE_HID,
+		(long long)resp.persisted_runtime);
+	TEST_ASSERT_EQ_INT(1, (int)resp.persistence_available);
+	TEST_ASSERT_EQ_INT(1, (int)resp.ble_advertising);
+	TEST_ASSERT_EQ_INT(1, (int)resp.ble_pairable);
+	TEST_ASSERT_EQ_INT(1, (int)resp.ble_connected);
+	TEST_ASSERT_EQ_INT(3, (int)resp.bond_count);
+	TEST_ASSERT_EQ_INT(7, (int)resp.event_log_filter);
+	TEST_ASSERT_EQ_INT(9, (int)resp.raw_packet_log_filter);
+}
+
+static void test_eval_get_runtime_config_invalid_active_clamped(void)
+{
+	board_runtime_state_t st = {
+		.active_runtime = 99,
+		.persisted_runtime = BOARD_RT_RAW_WHAD,
+	};
+	board_RuntimeConfigResponse resp;
+
+	boardmodule_eval_get_runtime_config(&st, &resp);
+	TEST_ASSERT_EQ_INT((long long)BOARD_RT_UNKNOWN,
+		(long long)resp.active_runtime);
+	TEST_ASSERT_EQ_INT((long long)BOARD_RT_RAW_WHAD,
+		(long long)resp.persisted_runtime);
+}
+
+static void test_eval_get_runtime_config_persistence_reflected(void)
+{
+	board_runtime_state_t st = {
+		.active_runtime        = BOARD_RT_BLE_HID,
+		.persisted_runtime     = BOARD_RT_RAW_WHAD,
+		.persistence_available = true,
+	};
+	board_RuntimeConfigResponse resp;
+
+	boardmodule_eval_get_runtime_config(&st, &resp);
+	TEST_ASSERT_EQ_INT((long long)BOARD_RT_BLE_HID,
+		(long long)resp.active_runtime);
+	TEST_ASSERT_EQ_INT((long long)BOARD_RT_RAW_WHAD,
+		(long long)resp.persisted_runtime);
+	TEST_ASSERT_EQ_INT(1, (int)resp.persistence_available);
+}
+
+static void test_eval_get_runtime_config_bond_count_clamped(void)
+{
+	board_runtime_state_t st = {
+		.active_runtime = BOARD_RT_RAW_WHAD,
+		.bond_count     = 300,
+	};
+	board_RuntimeConfigResponse resp;
+
+	boardmodule_eval_get_runtime_config(&st, &resp);
+	TEST_ASSERT_EQ_INT(255, (int)resp.bond_count);
+}
+
+static void test_eval_get_runtime_config_ble_mode_unclamped(void)
+{
+	board_runtime_state_t st = {
+		.active_runtime = BOARD_RT_BLE_HID,
+	};
+	board_RuntimeConfigResponse resp;
+
+	boardmodule_eval_get_runtime_config(&st, &resp);
+	TEST_ASSERT_EQ_INT((long long)BOARD_RT_BLE_HID,
+		(long long)resp.active_runtime);
 }
 
 static void test_is_command_advertised(void)
@@ -205,7 +324,7 @@ static void test_is_command_advertised(void)
 		CMD(WHAD_BOARD_CMD_READ_SENSOR)));
 	TEST_ASSERT_EQ_INT(1, boardmodule_is_command_advertised(
 		CMD(WHAD_BOARD_CMD_I2C_TRANSFER)));
-	TEST_ASSERT_EQ_INT(0, boardmodule_is_command_advertised(
+	TEST_ASSERT_EQ_INT(1, boardmodule_is_command_advertised(
 		CMD(WHAD_BOARD_CMD_STORAGE_INFO)));
 }
 
@@ -306,15 +425,15 @@ static const struct {
 	{ CMD(WHAD_BOARD_CMD_GET_INPUT_STATE),    1 },
 	{ CMD(WHAD_BOARD_CMD_CONFIGURE_INPUT),    1 },
 	{ CMD(WHAD_BOARD_CMD_I2C_TRANSFER),       1 },
-	{ CMD(WHAD_BOARD_CMD_GPIO_CONFIGURE),     0 },
-	{ CMD(WHAD_BOARD_CMD_GPIO_READ),          0 },
-	{ CMD(WHAD_BOARD_CMD_GPIO_WRITE),         0 },
-	{ CMD(WHAD_BOARD_CMD_ADC_READ),           0 },
+	{ CMD(WHAD_BOARD_CMD_GPIO_CONFIGURE),     1 },
+	{ CMD(WHAD_BOARD_CMD_GPIO_READ),          1 },
+	{ CMD(WHAD_BOARD_CMD_GPIO_WRITE),         1 },
+	{ CMD(WHAD_BOARD_CMD_ADC_READ),           1 },
 	{ CMD(WHAD_BOARD_CMD_SPI_TRANSFER),       1 },
-	{ CMD(WHAD_BOARD_CMD_STORAGE_INFO),       0 },
-	{ CMD(WHAD_BOARD_CMD_STORAGE_ADOPT),      0 },
-	{ CMD(WHAD_BOARD_CMD_STORAGE_READ_LOG),   0 },
-	{ CMD(WHAD_BOARD_CMD_STORAGE_ERASE_LOG),  0 },
+	{ CMD(WHAD_BOARD_CMD_STORAGE_INFO),       1 },
+	{ CMD(WHAD_BOARD_CMD_STORAGE_ADOPT),      1 },
+	{ CMD(WHAD_BOARD_CMD_STORAGE_READ_LOG),   1 },
+	{ CMD(WHAD_BOARD_CMD_STORAGE_ERASE_LOG),  1 },
 	{ CMD(WHAD_BOARD_CMD_GET_RUNTIME_CONFIG), 1 },
 	{ CMD(WHAD_BOARD_CMD_SET_RUNTIME_CONFIG), 1 },
 	{ CMD(WHAD_BOARD_CMD_SET_RUNTIME_MODE),   1 },
@@ -342,21 +461,19 @@ static void test_all_board_commands_classified(void)
 			++advertised_count;
 		}
 	}
-	TEST_ASSERT_EQ_INT(20, advertised_count);
+	TEST_ASSERT_EQ_INT(28, advertised_count);
 }
 
-static void test_unimplemented_commands_not_advertised(void)
+static void test_all_board_commands_advertised(void)
 {
-	/* Resource-transfer commands NOT implemented until later waves. */
-	TEST_ASSERT_EQ_INT(0, boardmodule_is_command_advertised(
+	TEST_ASSERT_EQ_INT(1, boardmodule_is_command_advertised(
 		CMD(WHAD_BOARD_CMD_GPIO_CONFIGURE)));
-	TEST_ASSERT_EQ_INT(0, boardmodule_is_command_advertised(
+	TEST_ASSERT_EQ_INT(1, boardmodule_is_command_advertised(
 		CMD(WHAD_BOARD_CMD_ADC_READ)));
 
-	/* Storage commands NOT implemented until Todo 29. */
-	TEST_ASSERT_EQ_INT(0, boardmodule_is_command_advertised(
+	TEST_ASSERT_EQ_INT(1, boardmodule_is_command_advertised(
 		CMD(WHAD_BOARD_CMD_STORAGE_INFO)));
-	TEST_ASSERT_EQ_INT(0, boardmodule_is_command_advertised(
+	TEST_ASSERT_EQ_INT(1, boardmodule_is_command_advertised(
 		CMD(WHAD_BOARD_CMD_STORAGE_ADOPT)));
 }
 
@@ -399,25 +516,32 @@ static void test_eval_set_runtime_mode_all_paths(void)
 
 static void test_eval_set_runtime_config_all_paths(void)
 {
-	/* All operation types × hasPersistedRuntime: exhaustive. */
+	/* All operation types × hasPersistedRuntime × bleRuntimeActive.
+	 * Exhaustive table for the BLE-agnostic paths; BLE-aware paths are
+	 * covered by dedicated tests above but included here for completeness. */
 	struct {
 		uint32_t op;
 		bool     has_persisted;
+		bool     ble_active;
 		uint32_t expected;
 	} cases[] = {
-		{ BOARD_CFG_OP_UPDATE,       false, board_BoardResultCode_SUCCESS },
-		{ BOARD_CFG_OP_UPDATE,       true,  board_BoardResultCode_NOT_ADOPTED },
-		{ BOARD_CFG_OP_OPEN_PAIRING, false, board_BoardResultCode_SUCCESS },
-		{ BOARD_CFG_OP_OPEN_PAIRING, true,  board_BoardResultCode_SUCCESS },
-		{ BOARD_CFG_OP_CLEAR_BONDS,  false, board_BoardResultCode_SUCCESS },
-		{ BOARD_CFG_OP_CLEAR_BONDS,  true,  board_BoardResultCode_SUCCESS },
-		{ 99,                        false, board_BoardResultCode_INVALID_ARGUMENT },
-		{ 99,                        true,  board_BoardResultCode_INVALID_ARGUMENT },
+		{ BOARD_CFG_OP_UPDATE,       false, false, board_BoardResultCode_SUCCESS },
+		{ BOARD_CFG_OP_UPDATE,       true,  false, board_BoardResultCode_NOT_ADOPTED },
+		{ BOARD_CFG_OP_UPDATE,       false, true,  board_BoardResultCode_SUCCESS },
+		{ BOARD_CFG_OP_UPDATE,       true,  true,  board_BoardResultCode_NOT_ADOPTED },
+		{ BOARD_CFG_OP_OPEN_PAIRING, false, false, board_BoardResultCode_NOT_IMPLEMENTED },
+		{ BOARD_CFG_OP_OPEN_PAIRING, true,  false, board_BoardResultCode_NOT_IMPLEMENTED },
+		{ BOARD_CFG_OP_OPEN_PAIRING, false, true,  board_BoardResultCode_SUCCESS },
+		{ BOARD_CFG_OP_CLEAR_BONDS,  false, false, board_BoardResultCode_NOT_IMPLEMENTED },
+		{ BOARD_CFG_OP_CLEAR_BONDS,  true,  false, board_BoardResultCode_NOT_IMPLEMENTED },
+		{ BOARD_CFG_OP_CLEAR_BONDS,  false, true,  board_BoardResultCode_SUCCESS },
+		{ 99,                        false, false, board_BoardResultCode_INVALID_ARGUMENT },
+		{ 99,                        true,  true,  board_BoardResultCode_INVALID_ARGUMENT },
 	};
 
 	for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i) {
 		uint32_t got = boardmodule_eval_set_runtime_config(
-			cases[i].op, cases[i].has_persisted);
+			cases[i].op, cases[i].has_persisted, cases[i].ble_active);
 		TEST_ASSERT_EQ_INT((long long)cases[i].expected,
 			(long long)got);
 	}
@@ -475,10 +599,17 @@ int main(void)
 	RUN_TEST(test_eval_set_runtime_mode_success);
 	RUN_TEST(test_eval_set_runtime_mode_not_adopted);
 	RUN_TEST(test_eval_set_runtime_mode_wrong_mode);
-	RUN_TEST(test_eval_set_runtime_config_pairing_bonds_success);
+	RUN_TEST(test_eval_set_runtime_config_pairing_bonds_not_implemented);
+	RUN_TEST(test_eval_set_runtime_config_pairing_bonds_with_ble_active);
 	RUN_TEST(test_eval_set_runtime_config_update_success);
 	RUN_TEST(test_eval_set_runtime_config_update_not_adopted);
 	RUN_TEST(test_eval_set_runtime_config_invalid);
+	RUN_TEST(test_eval_get_runtime_config_all_zero);
+	RUN_TEST(test_eval_get_runtime_config_all_populated);
+	RUN_TEST(test_eval_get_runtime_config_invalid_active_clamped);
+	RUN_TEST(test_eval_get_runtime_config_persistence_reflected);
+	RUN_TEST(test_eval_get_runtime_config_bond_count_clamped);
+	RUN_TEST(test_eval_get_runtime_config_ble_mode_unclamped);
 	RUN_TEST(test_is_command_advertised);
 	RUN_TEST(test_get_runtime_caps_raw_whad);
 	RUN_TEST(test_get_runtime_caps_ble_hid);
@@ -486,7 +617,7 @@ int main(void)
 	RUN_TEST(test_get_runtime_caps_ble_has_no_radio_domains);
 
 	RUN_TEST(test_all_board_commands_classified);
-	RUN_TEST(test_unimplemented_commands_not_advertised);
+	RUN_TEST(test_all_board_commands_advertised);
 	RUN_TEST(test_implemented_handlers_advertised);
 	RUN_TEST(test_eval_set_runtime_mode_all_paths);
 	RUN_TEST(test_eval_set_runtime_config_all_paths);

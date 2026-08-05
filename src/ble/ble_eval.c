@@ -184,3 +184,28 @@ bool ble_irq_priority_is_app_safe(uint32_t priority) {
 bool ble_ble_mode_raw_timer_check(bool timer3_started, bool timer4_started) {
 	return !timer3_started && !timer4_started;
 }
+
+/* ---- Advertising-mode mapping + param-update classifier --------------- */
+
+int ble_eval_state_to_adv_mode(ble_adv_state_t state) {
+	switch (state) {
+	case BLE_ADV_STATE_FAST:     return 1;
+	case BLE_ADV_STATE_SLOW:     return 2;
+	case BLE_ADV_STATE_DIRECTED: return 3;
+	default:                     return 0;
+	}
+}
+
+ble_param_update_result_t ble_eval_classify_param_update_error(uint32_t err_code,
+                                                               bool connected) {
+	if (err_code == BLE_EVAL_ERR_SUCCESS) {
+		return BLE_EVAL_PARAM_UPDATE_OK;
+	}
+	if (!connected) {
+		return BLE_EVAL_PARAM_UPDATE_NO_CONNECTION;
+	}
+	if (err_code == BLE_EVAL_ERR_INVALID_STATE) {
+		return BLE_EVAL_PARAM_UPDATE_RATE_LIMITED;
+	}
+	return BLE_EVAL_PARAM_UPDATE_BACKOFF;
+}

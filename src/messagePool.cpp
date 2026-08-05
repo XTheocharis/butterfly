@@ -1,17 +1,20 @@
 #include "messagePool.h"
 
 #include <string.h>
+#include "whad/protocol/board/board.pb.h"
+#include "discovery.h"
 
 #if defined(NRF52840_XXAA)
 extern "C" void app_util_critical_region_enter(uint8_t *p_nested);
 extern "C" void app_util_critical_region_exit(uint8_t nested);
 #endif
 
-typedef union PoolBytes {
-	void *ptr;
-	long double align;
-	uint8_t bytes[MESSAGE_POOL_WRAPPER_SLOT_SIZE];
-} PoolBytes;
+static_assert(sizeof(Message) == 7008, "Message size drift — check nanopb regeneration");
+static_assert(offsetof(Message, msg) == 8, "Message union offset drift");
+static_assert(offsetof(BoardMessageSlot, which_msg) == offsetof(Message, which_msg),
+	"BoardMessageSlot header mismatch");
+static_assert(offsetof(BoardMessageSlot, board) == offsetof(Message, msg.board),
+	"BoardMessageSlot arm offset mismatch");
 
 typedef union PacketSlot {
 	void *ptr;
@@ -27,15 +30,15 @@ typedef struct PoolState {
 	uint16_t count;
 } PoolState;
 
-static Message g_messagePool[MESSAGE_POOL_MESSAGE_COUNT];
+static Message g_messagePool[MESSAGE_POOL_FULL_UNION_COUNT];
+static BoardMessageSlot g_boardSlotPool[MESSAGE_POOL_BOARD_SLOT_COUNT];
 static MessageQueueElement g_queueNodePool[MESSAGE_POOL_QUEUE_NODE_COUNT];
-static PoolBytes g_wrapperPool[MESSAGE_POOL_WRAPPER_COUNT];
 static PacketSlot g_packetBufferPool[MESSAGE_POOL_PACKET_BUFFER_COUNT];
 static PacketSlot g_packetPayloadPool[MESSAGE_POOL_PACKET_PAYLOAD_COUNT];
 
 static PoolState g_messageState;
+static PoolState g_boardSlotState;
 static PoolState g_queueNodeState;
-static PoolState g_wrapperState;
 static PoolState g_packetBufferState;
 static PoolState g_packetPayloadState;
 
@@ -45,11 +48,11 @@ static uint32_t g_overflowCount = 0;
 static const MessagePoolConfig g_config = {
 	sizeof(Message),
 	sizeof(MessageQueueElement),
-	MESSAGE_POOL_WRAPPER_SLOT_SIZE,
+	0,
 	MESSAGE_POOL_PACKET_SLOT_SIZE,
-	MESSAGE_POOL_MESSAGE_COUNT,
+	MESSAGE_POOL_FULL_UNION_COUNT,
 	MESSAGE_POOL_QUEUE_NODE_COUNT,
-	MESSAGE_POOL_WRAPPER_COUNT,
+	0,
 	MESSAGE_POOL_PACKET_BUFFER_COUNT,
 	MESSAGE_POOL_PACKET_PAYLOAD_COUNT,
 	MESSAGE_POOL_COMMAND_RESPONSE_RESERVE
@@ -170,14 +173,14 @@ static MessagePoolHandle handleForSlot(PoolState *state, Slot *pool, void *ptr, 
 void messagePoolReset(void)
 {
 	uint8_t nested = enterCritical();
-	poolInit(&g_messageState, MESSAGE_POOL_MESSAGE_COUNT);
+	poolInit(&g_messageState, MESSAGE_POOL_FULL_UNION_COUNT);
+	poolInit(&g_boardSlotState, MESSAGE_POOL_BOARD_SLOT_COUNT);
 	poolInit(&g_queueNodeState, MESSAGE_POOL_QUEUE_NODE_COUNT);
-	poolInit(&g_wrapperState, MESSAGE_POOL_WRAPPER_COUNT);
 	poolInit(&g_packetBufferState, MESSAGE_POOL_PACKET_BUFFER_COUNT);
 	poolInit(&g_packetPayloadState, MESSAGE_POOL_PACKET_PAYLOAD_COUNT);
 	memset(g_messagePool, 0, sizeof(g_messagePool));
+	memset(g_boardSlotPool, 0, sizeof(g_boardSlotPool));
 	memset(g_queueNodePool, 0, sizeof(g_queueNodePool));
-	memset(g_wrapperPool, 0, sizeof(g_wrapperPool));
 	memset(g_packetBufferPool, 0, sizeof(g_packetBufferPool));
 	memset(g_packetPayloadPool, 0, sizeof(g_packetPayloadPool));
 	g_overflowCount = 0;
@@ -211,24 +214,55 @@ Message *messagePoolAllocateMessage(MessagePoolHandle *handle)
 	return &g_messagePool[index];
 }
 
+Message *messagePoolAllocateForDomain(uint32_t domain)
+{
+	ensureInitialized();
+	if (domain == DOMAIN_BOARD) {
+		uint16_t index = 0;
+		uint8_t nested = enterCritical();
+		bool ok = allocateIndex(&g_boardSlotState, MESSAGE_POOL_TRAFFIC_COMMAND_RESPONSE, &index);
+		exitCritical(nested);
+		if (!ok) {
+			messagePoolRecordOverflow();
+			return NULL;
+		}
+		memset(&g_boardSlotPool[index], 0, sizeof(BoardMessageSlot));
+		return reinterpret_cast<Message *>(&g_boardSlotPool[index]);
+	}
+	return messagePoolAllocateMessage(NULL);
+}
+
 MessagePoolHandle messagePoolHandleForMessage(Message *message)
 {
 	ensureInitialized();
-	if (message < &g_messagePool[0] || message >= &g_messagePool[MESSAGE_POOL_MESSAGE_COUNT]) {
-		return nullHandle(MESSAGE_POOL_KIND_MESSAGE);
+	if (message >= &g_messagePool[0] && message < &g_messagePool[MESSAGE_POOL_FULL_UNION_COUNT]) {
+		uint16_t index = (uint16_t)(message - &g_messagePool[0]);
+		return makeHandle(MESSAGE_POOL_KIND_MESSAGE, index, g_messageState.generation[index]);
 	}
-	uint16_t index = (uint16_t)(message - &g_messagePool[0]);
-	return makeHandle(MESSAGE_POOL_KIND_MESSAGE, index, g_messageState.generation[index]);
+	Message *boardStart = reinterpret_cast<Message *>(&g_boardSlotPool[0]);
+	Message *boardEnd = reinterpret_cast<Message *>(&g_boardSlotPool[MESSAGE_POOL_BOARD_SLOT_COUNT]);
+	if (message >= boardStart && message < boardEnd) {
+		uint16_t index = (uint16_t)(message - boardStart);
+		return makeHandle(MESSAGE_POOL_KIND_BOARD_SLOT, index, g_boardSlotState.generation[index]);
+	}
+	return nullHandle(MESSAGE_POOL_KIND_MESSAGE);
 }
 
 MessagePoolStatus messagePoolReleaseMessageHandle(MessagePoolHandle handle)
 {
 	ensureInitialized();
-	if (handle.kind != MESSAGE_POOL_KIND_MESSAGE) {
+	PoolState *state;
+	if (handle.kind == MESSAGE_POOL_KIND_BOARD_SLOT) {
+		state = &g_boardSlotState;
+	}
+	else if (handle.kind == MESSAGE_POOL_KIND_MESSAGE) {
+		state = &g_messageState;
+	}
+	else {
 		return MESSAGE_POOL_NOT_OWNED;
 	}
 	uint8_t nested = enterCritical();
-	MessagePoolStatus status = releaseIndex(&g_messageState, handle);
+	MessagePoolStatus status = releaseIndex(state, handle);
 	exitCritical(nested);
 	return status;
 }
@@ -270,38 +304,6 @@ MessagePoolStatus messagePoolReleaseQueueNode(MessageQueueElement *node)
 	MessagePoolHandle handle = makeHandle(MESSAGE_POOL_KIND_QUEUE_NODE, index, g_queueNodeState.generation[index]);
 	uint8_t nested = enterCritical();
 	MessagePoolStatus status = releaseIndex(&g_queueNodeState, handle);
-	exitCritical(nested);
-	return status;
-}
-
-void *messagePoolAllocateWrapper(size_t size)
-{
-	ensureInitialized();
-	if (size > MESSAGE_POOL_WRAPPER_SLOT_SIZE) {
-		messagePoolRecordOverflow();
-		return NULL;
-	}
-	uint16_t index = 0;
-	uint8_t nested = enterCritical();
-	bool ok = allocateIndex(&g_wrapperState, MESSAGE_POOL_TRAFFIC_COMMAND_RESPONSE, &index);
-	exitCritical(nested);
-	if (!ok) {
-		messagePoolRecordOverflow();
-		return NULL;
-	}
-	memset(g_wrapperPool[index].bytes, 0, MESSAGE_POOL_WRAPPER_SLOT_SIZE);
-	return g_wrapperPool[index].bytes;
-}
-
-MessagePoolStatus messagePoolReleaseWrapper(void *wrapper)
-{
-	ensureInitialized();
-	MessagePoolHandle handle = handleForSlot(&g_wrapperState, g_wrapperPool, wrapper, MESSAGE_POOL_KIND_WRAPPER);
-	if (handle.index == UINT16_MAX) {
-		return MESSAGE_POOL_NOT_OWNED;
-	}
-	uint8_t nested = enterCritical();
-	MessagePoolStatus status = releaseIndex(&g_wrapperState, handle);
 	exitCritical(nested);
 	return status;
 }

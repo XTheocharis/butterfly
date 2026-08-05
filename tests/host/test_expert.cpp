@@ -13,6 +13,8 @@
 
 #include "../../src/expert/expert_eval.h"
 
+#include "whad/protocol/board/board.pb.h"
+
 #include <string.h>
 
 /* ================================================================
@@ -552,6 +554,53 @@ static void test_session_increments(void)
 	TEST_ASSERT_EQ_INT((int)(s1 + 1), (int)s2);
 }
 
+/* ================================================================
+ * Result-code mapping (expert_result_t → board_BoardResultCode)
+ * Shared by GpioConfigure/Read/Write, AdcRead, ReleasePin handlers.
+ * ================================================================ */
+
+static void test_to_board_result_ok(void)
+{
+	TEST_ASSERT_EQ_INT((long long)board_BoardResultCode_SUCCESS,
+		(long long)expert_eval_to_board_result(EXPERT_OK));
+}
+
+static void test_to_board_result_invalid_param(void)
+{
+	TEST_ASSERT_EQ_INT((long long)board_BoardResultCode_INVALID_ARGUMENT,
+		(long long)expert_eval_to_board_result(EXPERT_ERR_INVALID_PARAM));
+}
+
+static void test_to_board_result_not_analog(void)
+{
+	TEST_ASSERT_EQ_INT((long long)board_BoardResultCode_INVALID_ARGUMENT,
+		(long long)expert_eval_to_board_result(EXPERT_ERR_NOT_ANALOG));
+}
+
+static void test_to_board_result_table_full(void)
+{
+	TEST_ASSERT_EQ_INT((long long)board_BoardResultCode_BUSY,
+		(long long)expert_eval_to_board_result(EXPERT_ERR_TABLE_FULL));
+}
+
+static void test_to_board_result_invalid_token(void)
+{
+	TEST_ASSERT_EQ_INT((long long)board_BoardResultCode_INVALID_ARGUMENT,
+		(long long)expert_eval_to_board_result(EXPERT_ERR_INVALID_TOKEN));
+}
+
+static void test_to_board_result_wrong_owner(void)
+{
+	TEST_ASSERT_EQ_INT((long long)board_BoardResultCode_INVALID_ARGUMENT,
+		(long long)expert_eval_to_board_result(EXPERT_ERR_WRONG_OWNER));
+}
+
+static void test_to_board_result_wrong_session(void)
+{
+	TEST_ASSERT_EQ_INT((long long)board_BoardResultCode_INVALID_ARGUMENT,
+		(long long)expert_eval_to_board_result(EXPERT_ERR_WRONG_SESSION));
+}
+
 /* ---- Compile-time guard ---- */
 static_assert(EXPERT_ALIAS_COUNT == 8,
 	"CLUE has exactly 8 analog-capable edge connector pins");
@@ -616,6 +665,15 @@ int main(void)
 	RUN_TEST(test_lease_release_all);
 	RUN_TEST(test_lease_multiple_owners_distinguished);
 	RUN_TEST(test_session_increments);
+
+	/* Result-code mapping (shared by GPIO/ADC expert handlers) */
+	RUN_TEST(test_to_board_result_ok);
+	RUN_TEST(test_to_board_result_invalid_param);
+	RUN_TEST(test_to_board_result_not_analog);
+	RUN_TEST(test_to_board_result_table_full);
+	RUN_TEST(test_to_board_result_invalid_token);
+	RUN_TEST(test_to_board_result_wrong_owner);
+	RUN_TEST(test_to_board_result_wrong_session);
 
 	return test_framework_finish();
 }

@@ -48,14 +48,44 @@ uint32_t boardmodule_eval_set_runtime_mode(
 
 /* Evaluate SetRuntimeConfig request.
  *
+ * bleRuntimeActive selects between BLE-aware and BLE-absent behaviour:
+ *   - OPEN_PAIRING/CLEAR_BONDS require an active BleRuntime → SUCCESS,
+ *     otherwise NOT_IMPLEMENTED.
+ *   - The UPDATE sub-op is BLE-agnostic.
+ *
  * Returns BoardResultCode:
  *   - update sub-op with has_persisted_runtime==true → NOT_ADOPTED
- *   - open_pairing_window sub-op → NOT_IMPLEMENTED (Todo 23)
- *   - clear_bonds sub-op → NOT_IMPLEMENTED (Todo 23)
+ *   - open_pairing with bleRuntimeActive==true → SUCCESS (else NOT_IMPLEMENTED)
+ *   - clear_bonds  with bleRuntimeActive==true → SUCCESS (else NOT_IMPLEMENTED)
  *   - update sub-op with volatile-only fields → SUCCESS
  */
 uint32_t boardmodule_eval_set_runtime_config(
-    uint32_t whichOperation, bool hasPersistedRuntime);
+    uint32_t whichOperation, bool hasPersistedRuntime,
+    bool bleRuntimeActive);
+
+/* Runtime state for GetRuntimeConfig eval — host-testable (no SDK deps).
+ * Uses uint32_t for enum fields to decouple from nanopb types. */
+typedef struct {
+	uint32_t active_runtime;       /* board_RuntimeMode enum value */
+	uint32_t persisted_runtime;    /* board_RuntimeMode enum value */
+	bool     persistence_available;
+	bool     ble_advertising;
+	bool     ble_pairable;
+	bool     ble_connected;
+	uint32_t bond_count;
+	uint32_t event_log_filter;
+	uint32_t raw_packet_log_filter;
+} board_runtime_state_t;
+
+/* Evaluate GetRuntimeConfig — validate/clamp state into response.
+ *
+ * - active_runtime >2 → clamped to BOARD_RT_UNKNOWN
+ * - bond_count >255 → clamped to 255
+ * - all other fields copied directly from *state
+ */
+void boardmodule_eval_get_runtime_config(
+    const board_runtime_state_t *state,
+    board_RuntimeConfigResponse *out);
 
 /* Check if a Board command bit is in the advertised bitmask. */
 bool boardmodule_is_command_advertised(uint32_t commandBit);

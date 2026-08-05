@@ -173,6 +173,23 @@ for pin in CLUE_I2C_SDA CLUE_I2C_SCL CLUE_I2C_INSTANCE CLUE_I2C_FREQUENCY \
     fi
 done
 
+# --- custom_board.h: value assertions for critical macros ---------------------
+# Presence-check above only verifies pin names exist. These four instance macros
+# MUST be the right value or peripherals collide (e.g. PWM0 is NeoPixel, PWM1 is
+# speaker — swapping them corrupts both drivers).
+assert_value() {
+    local macro="$1" expected="$2"
+    local actual
+    actual=$(grep -oP "^#define[[:space:]]+${macro}[[:space:]]+\K[0-9]+" "${CUSTOM_BOARD}" 2>/dev/null || echo "")
+    if [ "$actual" != "$expected" ]; then
+        fail "custom_board.h: ${macro}=${actual:-MISSING}, expected ${expected}"
+    fi
+}
+assert_value CLUE_SPEAKER_PWM_INSTANCE "1"
+assert_value CLUE_I2C_INSTANCE "1"
+assert_value CLUE_PDM_INSTANCE "0"
+assert_value CLUE_TFT_SPIM_INSTANCE "2"
+
 # --- custom_board.h: no UART P0.09/P0.10 alias ---------------------------------
 # RX_PIN_NUMBER=9 / TX_PIN_NUMBER=10 must NOT be defined (collide with APDS9960 IRQ + LED_2).
 if grep -qE "^#define[[:space:]]+RX_PIN_NUMBER[[:space:]]+9" "${CUSTOM_BOARD}"; then

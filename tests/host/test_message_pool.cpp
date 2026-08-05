@@ -4,11 +4,11 @@
 
 static void pool_exhaustion_when_message_pool_is_full(void)
 {
-    Message *messages[MESSAGE_POOL_MESSAGE_COUNT];
+    Message *messages[MESSAGE_POOL_FULL_UNION_COUNT];
 
     messagePoolReset();
 
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         messages[i] = messagePoolAllocateMessage(NULL);
         TEST_ASSERT(messages[i] != NULL, "message slot should allocate before exhaustion");
     }
@@ -16,7 +16,7 @@ static void pool_exhaustion_when_message_pool_is_full(void)
     TEST_ASSERT(messagePoolAllocateMessage(NULL) == NULL, "message pool should reject newest allocation when exhausted");
     TEST_ASSERT_EQ_INT(1, messagePoolOverflowCount());
 
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         TEST_ASSERT_EQ_INT(MESSAGE_POOL_OK, messagePoolReleaseMessage(messages[i]));
     }
 }
@@ -73,18 +73,15 @@ static void stale_handles_when_slot_is_reused(void)
 
 static void timestamp_and_domain_tags_survive_queue_delay(void)
 {
-    const int tags[5] = {
+    const int tags[MESSAGE_POOL_FULL_UNION_COUNT] = {
         Message_generic_tag,
         Message_discovery_tag,
-        Message_ble_tag,
-        Message_dot15d4_tag,
-        Message_esb_tag,
     };
     MessageQueue queue = {0, NULL, NULL};
 
     messagePoolReset();
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         Message *message = messagePoolAllocateMessage(NULL);
         MessageQueueElement *node = messagePoolAllocateQueueNode(MESSAGE_POOL_TRAFFIC_COMMAND_RESPONSE, NULL);
         TEST_ASSERT(message != NULL, "message should allocate for domain round trip");
@@ -104,7 +101,7 @@ static void timestamp_and_domain_tags_survive_queue_delay(void)
         queue.size++;
     }
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         MessageQueueElement *node = queue.firstElement;
         queue.firstElement = node->nextElement;
         queue.size--;
@@ -165,26 +162,26 @@ static void full_pool_cycle_restores_to_full_capacity(void)
 {
     messagePoolReset();
 
-    Message *msgs[MESSAGE_POOL_MESSAGE_COUNT];
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    Message *msgs[MESSAGE_POOL_FULL_UNION_COUNT];
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         msgs[i] = messagePoolAllocateMessage(NULL);
         TEST_ASSERT(msgs[i] != NULL, "allocate before first exhaustion");
     }
     TEST_ASSERT(messagePoolAllocateMessage(NULL) == NULL,
                 "pool exhausted on first cycle");
 
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         TEST_ASSERT_EQ_INT(MESSAGE_POOL_OK, messagePoolReleaseMessage(msgs[i]));
     }
 
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         msgs[i] = messagePoolAllocateMessage(NULL);
         TEST_ASSERT(msgs[i] != NULL, "allocate after full recycle");
     }
     TEST_ASSERT(messagePoolAllocateMessage(NULL) == NULL,
                 "pool exhausted again after recycle");
 
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         TEST_ASSERT_EQ_INT(MESSAGE_POOL_OK, messagePoolReleaseMessage(msgs[i]));
     }
 }
@@ -211,14 +208,14 @@ static void thousand_dispatch_round_trips_return_to_baseline(void)
 
     TEST_ASSERT_EQ_INT(0, messagePoolOverflowCount());
 
-    Message *msgs[MESSAGE_POOL_MESSAGE_COUNT];
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    Message *msgs[MESSAGE_POOL_FULL_UNION_COUNT];
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         msgs[i] = messagePoolAllocateMessage(NULL);
         TEST_ASSERT(msgs[i] != NULL, "pool should be at full capacity after 1000 round-trips");
     }
     TEST_ASSERT(messagePoolAllocateMessage(NULL) == NULL,
                 "pool should be cleanly exhausted after 1000 round-trips");
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         TEST_ASSERT_EQ_INT(MESSAGE_POOL_OK, messagePoolReleaseMessage(msgs[i]));
     }
 }
@@ -227,8 +224,8 @@ static void exhaustion_preserves_command_response_reserve(void)
 {
     messagePoolReset();
 
-    Message *msgs[MESSAGE_POOL_MESSAGE_COUNT];
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    Message *msgs[MESSAGE_POOL_FULL_UNION_COUNT];
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         msgs[i] = messagePoolAllocateMessage(NULL);
         TEST_ASSERT(msgs[i] != NULL, "message should allocate before exhaustion");
     }
@@ -252,7 +249,7 @@ static void exhaustion_preserves_command_response_reserve(void)
         TEST_ASSERT_EQ_INT(MESSAGE_POOL_OK, messagePoolReleaseQueueNode(node));
     }
 
-    for (int i = 0; i < MESSAGE_POOL_MESSAGE_COUNT; i++) {
+    for (int i = 0; i < MESSAGE_POOL_FULL_UNION_COUNT; i++) {
         TEST_ASSERT_EQ_INT(MESSAGE_POOL_OK, messagePoolReleaseMessage(msgs[i]));
     }
     for (int i = 0; i < MESSAGE_POOL_QUEUE_NODE_COUNT - MESSAGE_POOL_COMMAND_RESPONSE_RESERVE; i++) {

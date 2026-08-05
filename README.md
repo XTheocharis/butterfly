@@ -37,11 +37,11 @@ This is the `XTheocharis/butterfly` fork (branch `clue`) tracking `upstream/whad
 ### Dual-runtime architecture
 - `src/runtime.{cpp,h}` (NEW) — GPREGRET2 one-shot selector (0xC1 raw / 0xC2 BLE), WDT+reset switcher (never in-place SoftDevice teardown).
 - `src/platformRuntime.{c,h}` (NEW) — SD-aware SDK wrapper layer (NVIC, GPREGRET, critical region, reset).
-- `src/main.cpp` — CLUE-only SoftDevice-disable SVC 0x11 + VTOR=0x26000 before `Core` construction.
+- `src/main.cpp` — CLUE-only mode-gated boot: RAW mode runs SVC 0x11 (SoftDevice-disable) + VTOR=0x26000; BLE mode skips both (SD stays alive, VTOR at MBR-default 0x0 so `nrf_sdh_enable_request()` can dispatch SVC). Also calls `timebase_init()`, `pinreg_init()`, `runtime_init()`, `runtime_select()` before Core construction.
 - `src/serial.{cpp,h}` — "DFU" magic trigger + DTR force-assert + CDC-close policy (raw resets, BLE survives).
 
-### Board domain (28 commands, 20 advertised)
-- `src/boardModule.{cpp,h}` (NEW 1502L) — dispatcher with 20 of 28 commands advertised (19 fully working + 1 returns hardcoded Wave-1 values); 8 unadvertised commands fall to default NOT_IMPLEMENTED (see workspace `TODO.md` for the deferred list).
+### Board domain (28 commands, all advertised)
+- `src/boardModule.{cpp,h}` (NEW 2144L) — dispatcher with all 28 commands advertised and handled: sensors, motion, storage (QSPI adopt/read/erase), expert I/O (GPIO/I2C/SPI/ADC), audio (PDM raw PCM), outputs (buzzer/NeoPixel/LED), runtime config, BLE-HID pairing/bonds/profiles.
 - `src/capabilities.h` — `CMD()` macro fix (`1ULL <<` to avoid signed-int UB), `CAPABILITIES_RAW_WHAD[]` vs `CAPABILITIES_BLE_HID[]` tables, `getRuntimeCapabilities(mode)` selector.
 
 ### New subsystems (all gated by `BOARD_CLUE`)
@@ -55,7 +55,7 @@ This is the `XTheocharis/butterfly` fork (branch `clue`) tracking `upstream/whad
 - `src/{display,menu,i2cBus,pinRegistry,timebase,messagePool}.{cpp,h}` — ST7789 TFT, recovery menu, I²C bus manager, pin lease registry, 64-bit timebase, fixed-size message pool
 
 ### Test infrastructure
-- `tests/host/` — 26 GCC/Clang test suites (~12KLoC, 1063 cases, all green). Host-only — refuses `arm-none-eabi-*`. ASan+UBSan via `test-sanitize` target. Deterministic seed (`SEED ?= 0xC0FFEE`). Uses pure-C `*_eval.{c,h}` companion files that mirror each SDK wrapper.
+- `tests/host/` — 28 GCC/Clang test suites (~12KLoC, 1112 cases, all green). Host-only — refuses `arm-none-eabi-*`. ASan+UBSan via `test-sanitize` target. Deterministic seed (`SEED ?= 0xC0FFEE`). Uses pure-C `*_eval.{c,h}` companion files that mirror each SDK wrapper.
 
 ### CI changes
 - `.github/workflows/compile.yml` — `wget` → `curl -L --fail` + `sha256sum -c -`, builds all three platforms (PCA10059, MDK_DONGLE, CLUE).

@@ -270,3 +270,27 @@ bool expert_eval_lease_query(expert_token_t token,
 	if (out_owner)    *out_owner    = entry->owner;
 	return true;
 }
+
+/* ---- Result-code mapping (shared by all GPIO/ADC expert handlers) ---- */
+
+board_BoardResultCode expert_eval_to_board_result(expert_result_t er)
+{
+	switch (er) {
+	case EXPERT_OK:
+		return board_BoardResultCode_SUCCESS;
+	case EXPERT_ERR_INVALID_PARAM:
+		return board_BoardResultCode_INVALID_ARGUMENT;
+	case EXPERT_ERR_NOT_ANALOG:
+		return board_BoardResultCode_INVALID_ARGUMENT;
+	case EXPERT_ERR_TABLE_FULL:
+		return board_BoardResultCode_BUSY;
+	case EXPERT_ERR_INVALID_TOKEN:
+		return board_BoardResultCode_INVALID_ARGUMENT;
+	case EXPERT_ERR_WRONG_OWNER:
+		return board_BoardResultCode_INVALID_ARGUMENT;
+	case EXPERT_ERR_WRONG_SESSION:
+		return board_BoardResultCode_INVALID_ARGUMENT;
+	}
+	/* Unreachable: every enum value is explicitly handled above. */
+	return board_BoardResultCode_INTERNAL_ERROR;
+}
