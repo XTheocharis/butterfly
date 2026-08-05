@@ -1719,7 +1719,7 @@ Core::Core(runtime_mode_t mode) {
 
 #ifdef BOARD_CLUE
  	this->boardModule = new BoardModule(this);
- 	this->menuManager = new MenuManager();
+ 	this->menuManager = NULL;
 
  	/* BLE-HID runtime — constructed only when mode == RUNTIME_BLE_HID.
  	 * init() defers SoftDevice enable until after SerialComm exists. */
@@ -1806,6 +1806,12 @@ void Core::init() {
 	this->displayModule->drawText(4, 16, "v1.2.0", COLOR_GRAY, COLOR_BLACK);
 	this->displayModule->drawText(4, 32, "IDLE", COLOR_WHITE, COLOR_BLACK);
 	this->displayModule->endBootSplash();
+
+	this->menuManager = new MenuManager();
+	MenuAvailability menuAvail = menuDefaultAvailability();
+	this->menuManager->init(&menuAvail, /*render_fn=*/nullptr, /*render_ctx=*/nullptr);
+	this->menuManager->registerOnDisplay(*this->displayModule, /*page=*/1);
+
 	nrf_gpio_cfg_input(BSP_BUTTON_0, BUTTON_PULL);
 #endif
 
@@ -2006,7 +2012,9 @@ void Core::loop() {
 		this->displayModule->flushDirty((uint32_t)timebase_now_ms(),
 		                                DISPLAY_DEFAULT_QUANTUM, false);
 
-		this->menuManager->tick(timebase_now_us());
+		if (this->menuManager != NULL) {
+			this->menuManager->tick(timebase_now_us());
+		}
 #endif
 
 		this->serialModule->process();
