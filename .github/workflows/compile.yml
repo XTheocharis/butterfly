@@ -2,9 +2,9 @@ name: C/C++ compilation CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "clue" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "clue" ]
 
 jobs:
   build:
@@ -37,3 +37,112 @@ jobs:
       run: make PLATFORM=BOARD_MDK_DONGLE SDK_ROOT=$(pwd)/.sdk/nRF5_SDK_17.1.0_ddde560
     - name: make BOARD_CLUE
       run: make PLATFORM=BOARD_CLUE SDK_ROOT=$(pwd)/.sdk/nRF5_SDK_17.1.0_ddde560
+    - name: Run host tests
+      run: make -C tests/host test
+
+  lint:
+    # Static analysis with clang-tidy. Advisory only — warnings do NOT fail
+    # the build (continue-on-error: true). Goal is to surface real bugs
+    # gradually without churning the existing embedded codebase. Tunable via
+    # the .clang-tidy file at the repo root.
+
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Install clang-tidy
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends clang-tidy
+        clang-tidy --version
+    - name: Install SDK
+      run: |
+        # SDK required so clang-tidy can resolve Nordic headers used by src/.
+        mkdir .sdk
+        curl -L --fail -o nrf5_sdk_17.1.0_ddde560.zip https://nsscprodmedia.blob.core.windows.net/prod/software-and-other-downloads/sdks/nrf5/binaries/nrf5_sdk_17.1.0_ddde560.zip
+        printf '%s  %s\n' '5bfe38e744c39fd7f30e10077ba12df306ef91f368894795d6a3e7a62dc68061' 'nrf5_sdk_17.1.0_ddde560.zip' | sha256sum -c -
+        unzip -q nrf5_sdk_17.1.0_ddde560.zip -d .sdk
+        rm -rf nrf5_sdk_17.1.0_ddde560.zip
+    - name: Run clang-tidy (C sources)
+      # Advisory lint over host-visible C sources. continue-on-error on the
+      # JOB keeps the workflow green even when individual findings are
+      # reported; per-step failures still surface in the Actions log.
+      run: |
+        SDK=$(pwd)/.sdk/nRF5_SDK_17.1.0_ddde560
+        INCLUDES=(
+          -Isrc
+          -I$(pwd)/../whad-lib/inc
+          -isystem ${SDK}/components/toolchain/cmsis/include
+          -isystem ${SDK}/components/toolchain
+          -isystem ${SDK}/modules/nrfx
+          -isystem ${SDK}/modules/nrfx/mdk
+          -isystem ${SDK}/integration/nrfx
+          -isystem ${SDK}/integration/nrfx/legacy
+          -isystem ${SDK}/components/drivers_nrf/nrf_soc_nosd
+          -isystem ${SDK}/components/boards
+          -isystem ${SDK}/components/libraries
+          -isystem ${SDK}/components/libraries/util
+          -isystem ${SDK}/components/softdevice/s140/headers
+          -isystem ${SDK}/components/softdevice/common
+        )
+        DEFINES=(
+          -DBOARD_CLUE=1
+          -DBOARD_CUSTOM=1
+          -DNRF52840_XXAA
+          -DNRF
+          -DNRF_SD_BLE_API_VERSION=7
+          -DBLE_STACK_SUPPORT_REQD
+          -DS140
+          -DSOFTDEVICE_PRESENT
+          -DFLOAT_ABI_HARD
+          -DCONFIG_GPIO_AS_PINRESET=1
+          -DCONFIG_NFCT_PINS_AS_GPIOS=1
+        )
+        # Lint top-level C sources only (skip tests/ + nested subsystems
+        # already covered by host GCC). -extra-arg prefix required for
+        # clang-tidy to forward flags past `--`.
+        find src -maxdepth 1 -name '*.c' -print0 \
+          | xargs -0 -r clang-tidy -- \
+              -x c -std=c11 \
+              "${DEFINES[@]}" \
+              "${INCLUDES[@]}"
+    - name: Run clang-tidy (C++ sources)
+      run: |
+        SDK=$(pwd)/.sdk/nRF5_SDK_17.1.0_ddde560
+        INCLUDES=(
+          -Isrc
+          -I$(pwd)/../whad-lib/inc
+          -isystem ${SDK}/components/toolchain/cmsis/include
+          -isystem ${SDK}/components/toolchain
+          -isystem ${SDK}/modules/nrfx
+          -isystem ${SDK}/modules/nrfx/mdk
+          -isystem ${SDK}/integration/nrfx
+          -isystem ${SDK}/integration/nrfx/legacy
+          -isystem ${SDK}/components/drivers_nrf/nrf_soc_nosd
+          -isystem ${SDK}/components/boards
+          -isystem ${SDK}/components/libraries
+          -isystem ${SDK}/components/libraries/util
+          -isystem ${SDK}/components/softdevice/s140/headers
+          -isystem ${SDK}/components/softdevice/common
+        )
+        DEFINES=(
+          -DBOARD_CLUE=1
+          -DBOARD_CUSTOM=1
+          -DNRF52840_XXAA
+          -DNRF
+          -DNRF_SD_BLE_API_VERSION=7
+          -DBLE_STACK_SUPPORT_REQD
+          -DS140
+          -DSOFTDEVICE_PRESENT
+          -DFLOAT_ABI_HARD
+          -DCONFIG_GPIO_AS_PINRESET=1
+          -DCONFIG_NFCT_PINS_AS_GPIOS=1
+        )
+        find src -maxdepth 1 -name '*.cpp' -print0 \
+          | xargs -0 -r clang-tidy -- \
+              -x c++ -std=c++17 \
+              "${DEFINES[@]}" \
+              "${INCLUDES[@]}"

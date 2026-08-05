@@ -1,0 +1,43 @@
+# clang-tidy configuration for butterfly firmware.
+# Advisory mode: warnings do NOT fail the build (CI lint job sets
+# continue-on-error: true). Goal is to surface real bugs gradually
+# without churning the existing embedded codebase.
+Checks: >
+  -*,
+  bugprone-*,
+  readability-*,
+  performance-*,
+  clang-analyzer-*,
+  -bugprone-easily-swappable-parameters,
+  -modernize-*,
+  -readability-else-after-return,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-named-parameter,
+  -readability-nonconst-parameter,
+  -readability-avoid-const-params-in-decls,
+  -readability-implicit-bool-conversion,
+  -readability-braces-around-statements,
+  -readability-simplify-boolean-expr,
+  -readability-redundant-access-specifiers,
+  -readability-isolate-declaration,
+  -clang-analyzer-alpha.core.*
+# Advisory mode — never escalate warnings to errors.
+WarningsAsErrors: ''
+# Only diagnose project headers; SDK + whad-lib + nanopb are external.
+HeaderFilterRegex: '^(?!.*(\.sdks/|\.sdk/|whad-lib/|nanopb/|modules/nrfx|integration/nrfx|components/toolchain)).*$'
+FormatStyle: file
+CheckOptions:
+  - key:   readability-function-cognitive-complexity.Threshold
+    value: '50'
+  - key:   readability-braces-around-statements.ShortStatementOnSameLine
+    value: 'true'
+  - key:   readability-identifier-naming.VariableCase
+    value: 'lower_case'
+  - key:   readability-identifier-naming.FunctionCase
+    value: 'lower_case'
+  - key:   readability-identifier-naming.ClassCase
+    value: 'CamelCase'
+  - key:   bugprone-assert-side-effect.CheckFunctionCalls
+    value: 'true'
