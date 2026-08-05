@@ -192,6 +192,14 @@ private:
     uint32_t m_inputDwellMs;
     uint32_t m_inputDeadzone;
 
+    /* === EVENT EMISSION STATE (D4/D5) ===
+     * Monotonic sequence counters for unsolicited InputEvent/GestureEvent
+     * and last-known button states for edge detection. */
+    uint32_t m_inputEventSeq;
+    uint32_t m_gestureEventSeq;
+    bool     m_lastBtnA;
+    bool     m_lastBtnB;
+
     /* Helper: populate a board_SensorDescriptor from eval table. */
     void populateDescriptor(board_SensorDescriptor *out,
                             const board_motion_sensor_info_t *info);
@@ -223,6 +231,26 @@ private:
     void sendCommandResult(uint32_t requestId,
                            board_BoardCommand command,
                            board_BoardResultCode result);
+
+    /* Send an unsolicited BoardStatus event (request_id=0). Used to
+     * surface progress/fault/runtime-switching notifications from the
+     * motion and storage subsystems. Supplements CommandResult, which
+     * remains the path for synchronous request/response. */
+    void sendBoardStatus(board_BoardStatusCode code,
+                         board_BoardResultCode result = board_BoardResultCode_SUCCESS,
+                         board_ResourceKind resource = board_ResourceKind_RESOURCE_UNKNOWN,
+                         uint32_t instance = 0,
+                         uint32_t progress_per_mille = 0,
+                         bool terminal = false,
+                         const char *detail = nullptr);
+
+    /* Send an unsolicited InputEvent for a button transition. */
+    void sendInputEvent(board_InputSource source,
+                        board_InputAction action,
+                        int32_t value = 0);
+
+    /* Send an unsolicited GestureEvent for a decoded APDS gesture. */
+    void sendGestureEvent(board_Gesture gesture);
 };
 
 #endif /* __cplusplus */

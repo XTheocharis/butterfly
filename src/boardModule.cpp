@@ -67,6 +67,10 @@ BoardModule::BoardModule(Core *core)
 	m_inputFlags = 0;
 	m_inputDwellMs = 0;
 	m_inputDeadzone = 0;
+	m_inputEventSeq = 0;
+	m_gestureEventSeq = 0;
+	m_lastBtnA = false;
+	m_lastBtnB = false;
 #ifdef BOARD_CLUE
 	m_profiles = nullptr;
 	m_dashboardRegistered = false;
@@ -965,6 +969,77 @@ void BoardModule::sendCommandResult(uint32_t requestId,
 	cr.detail[0] = '\0';
 
 	whad_board_command_result(resp, requestId, &cr);
+	m_core->pushMessageToQueue(resp);
+}
+
+void BoardModule::sendBoardStatus(board_BoardStatusCode code,
+                                  board_BoardResultCode result,
+                                  board_ResourceKind resource,
+                                  uint32_t instance,
+                                  uint32_t progress_per_mille,
+                                  bool terminal,
+                                  const char *detail)
+{
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+	if (resp == NULL) {
+		return;
+	}
+
+	board_BoardStatus status;
+	memset(&status, 0, sizeof(status));
+	status.timestamp_us = (uint64_t)timebase_now_us();
+	status.code = code;
+	status.result = result;
+	status.resource = resource;
+	status.instance = instance;
+	status.progress_per_mille = progress_per_mille;
+	status.terminal = terminal;
+	if (detail != nullptr) {
+		strncpy(status.detail, detail, sizeof(status.detail) - 1);
+		status.detail[sizeof(status.detail) - 1] = '\0';
+	} else {
+		status.detail[0] = '\0';
+	}
+
+	whad_board_board_status(resp, 0u, &status);
+	m_core->pushMessageToQueue(resp);
+}
+
+void BoardModule::sendInputEvent(board_InputSource source,
+                                 board_InputAction action,
+                                 int32_t value)
+{
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+	if (resp == NULL) {
+		return;
+	}
+
+	board_InputEvent evt;
+	memset(&evt, 0, sizeof(evt));
+	evt.sequence = m_inputEventSeq++;
+	evt.timestamp_us = (uint64_t)timebase_now_us();
+	evt.source = source;
+	evt.action = action;
+	evt.value = value;
+
+	whad_board_input_event(resp, 0u, &evt);
+	m_core->pushMessageToQueue(resp);
+}
+
+void BoardModule::sendGestureEvent(board_Gesture gesture)
+{
+	Message *resp = messagePoolAllocateForDomain(DOMAIN_BOARD);
+	if (resp == NULL) {
+		return;
+	}
+
+	board_GestureEvent evt;
+	memset(&evt, 0, sizeof(evt));
+	evt.sequence = m_gestureEventSeq++;
+	evt.timestamp_us = (uint64_t)timebase_now_us();
+	evt.gesture = gesture;
+
+	whad_board_gesture_event(resp, 0u, &evt);
 	m_core->pushMessageToQueue(resp);
 }
 
@@ -1948,6 +2023,14 @@ void BoardModule::injectApdsGesture(apds9960_gesture_t g)
 {
 #ifdef BOARD_CLUE
 	m_motion.feedApdsGesture(g);
+	/* Emit a GestureEvent so the host sees the decoded gesture in real
+	 * time, independent of any configured ProfileManager mapping. The
+	 * internal apds9960_gesture_t enum values match board_Gesture 1:1
+	 * (UNKNOWN=0, UP=1, DOWN=2, LEFT=3, RIGHT=4, NEAR=5, FAR=6). */
+	if (g != APDS9960_GESTURE_NONE) {
+		sendGestureEvent(static_cast<board_Gesture>(
+			apds9960_gesture_to_proto(g)));
+	}
 #else
 	(void)g;
 #endif
@@ -1957,6 +2040,22 @@ void BoardModule::injectButtons(bool button_a, bool button_b)
 {
 #ifdef BOARD_CLUE
 	m_motion.feedButtons(button_a, button_b);
+	/* Emit InputEvent on each button edge (press/release). The CLUE
+	 * exposes two tactile buttons: A and B (P0.14 / P0.15). */
+	if (button_a != m_lastBtnA) {
+		sendInputEvent(
+			board_InputSource_INPUT_SOURCE_BUTTON_A,
+			button_a ? board_InputAction_INPUT_ACTION_PRESS
+			         : board_InputAction_INPUT_ACTION_RELEASE);
+		m_lastBtnA = button_a;
+	}
+	if (button_b != m_lastBtnB) {
+		sendInputEvent(
+			board_InputSource_INPUT_SOURCE_BUTTON_B,
+			button_b ? board_InputAction_INPUT_ACTION_PRESS
+			         : board_InputAction_INPUT_ACTION_RELEASE);
+		m_lastBtnB = button_b;
+	}
 #else
 	(void)button_a; (void)button_b;
 #endif
@@ -2127,21 +2226,30 @@ void BoardModule::tick(void)
 
 void BoardModule::publishRotationState(rotg_event_t evt)
 {
-	/* For now: surface to the host via a Verbose notification on the
-	 * most significant events. A future todo (Todo 14 / 21) routes this
-	 * to a proper BoardStatus event and HIDS consumer key. */
+	/* Surface rotation-gesture state transitions to the host via a
+	 * BoardStatus event (code=RUNTIME_SWITCHING for switch-related
+	 * events, terminal=true for end states). The legacy Verbose
+	 * notification is kept for backward-compat with whadup log
+	 * scraping; BoardStatus is the structured path consumed by the
+	 * client's on_domain_msg handler. */
 	const char *msg = nullptr;
+	bool terminal = false;
 	switch (evt) {
-	case ROTG_EVENT_ARMED:        msg = "rot:armed"; break;
-	case ROTG_EVENT_INVERTED:     msg = "rot:inverted"; break;
-	case ROTG_EVENT_RETURNED:     msg = "rot:returned"; break;
-	case ROTG_EVENT_CONFIRM_REQ:  msg = "rot:confirm"; break;
-	case ROTG_EVENT_SWITCH_CONFIRM: msg = "rot:switch"; break;
-	case ROTG_EVENT_CANCELLED:    msg = "rot:cancelled"; break;
+	case ROTG_EVENT_ARMED:          msg = "rot:armed";    break;
+	case ROTG_EVENT_INVERTED:       msg = "rot:inverted"; break;
+	case ROTG_EVENT_RETURNED:       msg = "rot:returned"; terminal = true; break;
+	case ROTG_EVENT_CONFIRM_REQ:    msg = "rot:confirm";  break;
+	case ROTG_EVENT_SWITCH_CONFIRM: msg = "rot:switch";   terminal = true; break;
+	case ROTG_EVENT_CANCELLED:      msg = "rot:cancelled"; terminal = true; break;
 	default: break;
 	}
 	if (msg != nullptr) {
 		m_core->sendVerbose(msg);
+		sendBoardStatus(
+			board_BoardStatusCode_BOARD_STATUS_RUNTIME_SWITCHING,
+			board_BoardResultCode_SUCCESS,
+			board_ResourceKind_RESOURCE_UNKNOWN,
+			0u, 0u, terminal, msg);
 	}
 }
 
