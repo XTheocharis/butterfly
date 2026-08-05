@@ -1815,6 +1815,8 @@ void Core::init() {
 	nrf_gpio_cfg_input(BSP_BUTTON_0, BUTTON_PULL);
 #endif
 
+	this->boardModule->initHardware();
+
 	/* USB CDC stack is started from the SerialComm constructor (called
 	 * during Core construction above). Do NOT re-init here — double
 	 * initialization corrupts the USBD driver state. */

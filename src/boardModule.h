@@ -33,6 +33,7 @@ class ProfileManager;
 class BoardModule {
 public:
     explicit BoardModule(Core *core);
+    void initHardware();
 
     /* Entry point called from Core::processInputMessage. */
     void processMessage(whad::board::BoardMsg &msg);

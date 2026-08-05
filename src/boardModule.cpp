@@ -18,6 +18,8 @@
 #include "version.h"
 #include "nrf.h"
 #include "timebase.h"
+#include "i2cBus.h"
+#include "i2c_twim_backend.h"
 
 #ifdef BOARD_CLUE
 #include "ble/profiles.h"
@@ -95,12 +97,22 @@ BoardModule::BoardModule(Core *core)
 	};
 	m_motion.setRotationSwitchCallback(switch_cb, nullptr);
 
-	/* === STORAGE INIT (Todo 28) ===
-	 * Acquire the QSPI pin group and probe the NOR chip. If the chip
-	 * is already adopted (committed superblock present), bring the
-	 * journal and CalibManager online so runtime persistence works.
-	 * Failure is non-fatal: storage commands return NOT_ADOPTED or
-	 * NOT_IMPLEMENTED when the manager was not initialized. */
+	/* QSPI, PDM, and sensor init moved to init() — see comment above. */
+
+	/* === I2C SENSOR DRIVERS (T21) ===
+	 * main.cpp already initialized the TWIM1 backend + i2cBus and
+	 * probed all 5 onboard sensors before constructing Core. Wire
+	 * the inject callbacks (IMU/mag/APDS-gesture → MotionManager)
+	 * then begin() each present sensor's async config FSM. The
+	 * pin-group lease was acquired by main.cpp and is stored inside
+	 * i2cbus_init; SensorDrivers::init does not re-acquire it. */
+	m_sensors.setListener(this);
+#endif
+}
+
+void BoardModule::initHardware()
+{
+#ifdef BOARD_CLUE
 	pinreg_token_t qspi_lease = PINREG_TOKEN_INVALID;
 	if (pinreg_acquire_group(PINREG_GROUP_QSPI, PINREG_OWNER_QSPI,
 	                         nullptr, &qspi_lease) == PINREG_OK) {
@@ -111,21 +123,16 @@ BoardModule::BoardModule(Core *core)
 			}
 		}
 	}
-
-	/* PDM microphone init acquires PINREG_GROUP_PDM (P0.00/P0.01) and
-	 * configures nrfx_pdm but does NOT start sampling. Sampling starts
-	 * on first audio-enable or RawPcmDiagnostics request. Init failure
-	 * is non-fatal — audio commands will surface BUSY. */
 	(void)m_pdm.init();
 
-	/* === I2C SENSOR DRIVERS (T21) ===
-	 * main.cpp already initialized the TWIM1 backend + i2cBus and
-	 * probed all 5 onboard sensors before constructing Core. Wire
-	 * the inject callbacks (IMU/mag/APDS-gesture → MotionManager)
-	 * then begin() each present sensor's async config FSM. The
-	 * pin-group lease was acquired by main.cpp and is stored inside
-	 * i2cbus_init; SensorDrivers::init does not re-acquire it. */
-	m_sensors.setListener(this);
+	pinreg_token_t i2c_lease = PINREG_TOKEN_INVALID;
+	(void)pinreg_acquire_group(PINREG_GROUP_TWIM1,
+	                            PINREG_OWNER_SENSOR_BUS, NULL, &i2c_lease);
+	const i2cbus_backend_t *i2c_be = i2c_twim_backend_get();
+	if (i2c_be != NULL) {
+		i2cbus_init(i2c_be, (uint32_t)i2c_lease);
+		i2cbus_probe_all();
+	}
 	(void)m_sensors.init(timebase_now_us(), 0);
 #endif
 }

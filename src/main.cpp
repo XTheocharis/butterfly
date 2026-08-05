@@ -130,22 +130,6 @@ int main(void) {
 	 * subsystem that calls pinreg_acquire_* (gpio/adc/pdm expert paths). */
 	pinreg_init(clue_crit_enter, clue_crit_exit);
 
-	/* Initialize the TWIM1 backend + the pure-logic i2cBus manager and
-	 * probe the five onboard sensors (LSM6DS33, LIS3MDL, APDS9960,
-	 * BMP280, SHT31-D). Probe results are queried by the sensor driver
-	 * wrappers via i2cbus_is_present() when BoardModule begins them.
-	 * T20 wires the bus; T21+ instantiates SensorDrivers inside
-	 * BoardModule to tick the wrappers and feed parsed samples into
-	 * the motion subsystem. */
-	pinreg_token_t i2c_lease = PINREG_TOKEN_INVALID;
-	(void)pinreg_acquire_group(PINREG_GROUP_TWIM1,
-	                            PINREG_OWNER_SENSOR_BUS, NULL, &i2c_lease);
-	const i2cbus_backend_t *i2c_be = i2c_twim_backend_get();
-	if (i2c_be != NULL) {
-		i2cbus_init(i2c_be, (uint32_t)i2c_lease);
-		i2cbus_probe_all();
-	}
-
 	/* Initialize the runtime selector with the platform backend so that
 	 * runtime_request_switch() (called from SetRuntimeMode and the rotation
 	 * gesture) becomes functional. runtime_select() consumes the GPREGRET2
