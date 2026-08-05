@@ -241,11 +241,18 @@ ifeq ($(PLATFORM),BOARD_CLUE)
 	SRC_FILES += $(PROJ_DIR)/runtime.cpp
 	SRC_FILES += $(PROJ_DIR)/boardModule.cpp
 	SRC_FILES += $(PROJ_DIR)/i2cBus.cpp
+	SRC_FILES += $(PROJ_DIR)/i2c_twim_backend.cpp
 	SRC_FILES += $(PROJ_DIR)/sensors/imu.cpp
 	SRC_FILES += $(PROJ_DIR)/sensors/mag.cpp
 	SRC_FILES += $(PROJ_DIR)/sensors/sht31d.cpp
 	SRC_FILES += $(PROJ_DIR)/sensors/bmp280.cpp
 	SRC_FILES += $(PROJ_DIR)/sensors/apds9960.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/imu_driver.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/mag_driver.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/bmp280_driver.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/sht31d_driver.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/apds9960_driver.cpp
+	SRC_FILES += $(PROJ_DIR)/sensors/sensor_drivers.cpp
 
 	SRC_FILES += $(PROJ_DIR)/motion/motion_eval.c
 	SRC_FILES += $(PROJ_DIR)/motion/fusion.cpp
