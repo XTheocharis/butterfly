@@ -1955,6 +1955,13 @@ void Core::loop() {
 
 		this->serialModule->process();
 
+#ifdef BOARD_CLUE
+		if (this->boardModule != NULL) {
+			this->boardModule->tick();
+		}
+		this->displayModule->flushDirty((uint32_t)timebase_now_ms(), DISPLAY_DEFAULT_QUANTUM, false);
+#endif
+
         /* Check if we receveived a WHAD message. */
         if (whad_get_message(&msg) == WHAD_SUCCESS)
         {
