@@ -589,12 +589,13 @@ void BoardModule::handleReadSensor(uint32_t requestId,
 		       : board_SensorStatusFlag_SENSOR_STATUS_STALE;
 		sample.timestamp_us = timebase_now_us();
 	} else {
-		/* Non-motion sensors 6-12: pull cached values from the
-		 * SensorDrivers wrappers (BMP280 / SHT31D / APDS-9960).
-		 * MotionManager::readSensor returns 0 for these IDs.
-		 * Gesture (12) stays STALE: gesture mode is not entered by
-		 * the optical-only APDS wrapper (T20); injectApdsGesture is
-		 * never called, so no cached gesture exists to surface. */
+		/* Non-motion sensors 6-13: pull cached values from the
+		 * SensorDrivers wrappers (BMP280 / SHT31D / APDS-9960) or
+		 * the PDM microphone driver. MotionManager::readSensor
+		 * returns 0 for these IDs. Gesture (12) stays STALE: gesture
+		 * mode is not entered by the optical-only APDS wrapper (T20);
+		 * injectApdsGesture is never called, so no cached gesture
+		 * exists to surface. */
 		switch (req.sensor_id) {
 		case 6: { /* pressure (Pa) */
 			bmp280_sample_t s;
@@ -660,6 +661,17 @@ void BoardModule::handleReadSensor(uint32_t requestId,
 			break;
 		}
 		case 12: /* gesture (enum) — see note above, stays STALE */
+			break;
+		case 13: { /* audio level (milli-dBFS) — PDM microphone */
+			const pdm_metrics_t *m = m_pdm.getLatestMetrics();
+			if (m != nullptr) {
+				values[0] = m->dbfs_x1000;
+				n = 1;
+				status = board_SensorStatusFlag_SENSOR_STATUS_NONE;
+				sample.timestamp_us = timebase_now_us();
+			}
+			break;
+		}
 		default:
 			status = board_SensorStatusFlag_SENSOR_STATUS_STALE;
 			break;
