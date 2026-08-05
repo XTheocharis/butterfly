@@ -1,0 +1,5 @@
+# Adafruit CLUE running ButteRFly firmware (c0ff:eeee) and UF2 bootloader (239a:0029)
+# Allow non-root access to the CDC ACM and UF2 mass-storage interfaces.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="c0ff", ATTRS{idProduct}=="eeee", MODE="0666", GROUP="uucp"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="c0ff", ATTRS{idProduct}=="eeee", MODE="0666", GROUP="uucp"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="239a", ATTRS{idProduct}=="0029", MODE="0666", GROUP="uucp"

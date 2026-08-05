@@ -590,10 +590,20 @@ clue_post_link_check: $(OUTPUT_DIRECTORY)/nrf52840_xxaa.hex
 nrf52840_xxaa: clue_post_link_check
 endif
 
-.PHONY: flash erase
+.PHONY: flash erase enter_dfu
 
 create_builddir:
 	mkdir -p build
+
+# Send "DFU" magic bytes to a connected CLUE over USB CDC. The firmware
+# reboots into the Adafruit UF2 bootloader (USB 239a:0029). Requires
+# pyserial; tolerates a missing device so CI can call it unconditionally.
+enter_dfu:
+ifeq ($(PLATFORM),BOARD_CLUE)
+	@python3 $(CONF_DIR)/trigger_dfu.py || echo "enter_dfu: no CLUE device or pyserial missing, skipping"
+else
+	@echo "enter_dfu is only supported on BOARD_CLUE (current PLATFORM=$(PLATFORM))"
+endif
 
 send: create_builddir
 ifeq ($(PLATFORM),BOARD_PCA10059)
