@@ -185,6 +185,13 @@ private:
     uint32_t m_rawPcmRequestId;
     uint32_t m_rawPcmSequence;
 
+    /* === INPUT MODE STATE (D9 — ConfigureInput handler) ===
+     * Cached ConfigureInput parameters. m_inputMode gates APDS dispatch. */
+    board_InputMode m_inputMode;
+    uint32_t m_inputFlags;
+    uint32_t m_inputDwellMs;
+    uint32_t m_inputDeadzone;
+
     /* Helper: populate a board_SensorDescriptor from eval table. */
     void populateDescriptor(board_SensorDescriptor *out,
                             const board_motion_sensor_info_t *info);

@@ -63,6 +63,10 @@ BoardModule::BoardModule(Core *core)
 	m_audioGainReg = PDM_GAIN_DEFAULT;
 	m_audioEnabled = false;
 	m_rawPcmRequestId = 0;
+	m_inputMode = board_InputMode_INPUT_MODE_REMOTE;
+	m_inputFlags = 0;
+	m_inputDwellMs = 0;
+	m_inputDeadzone = 0;
 #ifdef BOARD_CLUE
 	m_profiles = nullptr;
 	m_dashboardRegistered = false;
@@ -982,14 +986,12 @@ void BoardModule::handleGetInputState(uint32_t requestId)
 	}
 	state.gesture = mapped;
 	state.microphone_threshold = false;
-	state.mode = (runtime_get_selected() == RUNTIME_BLE_HID)
-	             ? board_InputMode_INPUT_MODE_GESTURE
-	             : board_InputMode_INPUT_MODE_REMOTE;
+	state.mode = m_inputMode;
 #else
 	state.buttons = 0;
 	state.gesture = board_Gesture_GESTURE_UNKNOWN;
 	state.microphone_threshold = false;
-	state.mode = board_InputMode_INPUT_MODE_REMOTE;
+	state.mode = m_inputMode;
 #endif
 
 	whad_board_input_state(resp, requestId, &state);
@@ -1005,6 +1007,11 @@ void BoardModule::handleConfigureInput(uint32_t requestId,
 		code = board_BoardResultCode_INVALID_ARGUMENT;
 	} else if (req.persist) {
 		code = board_BoardResultCode_NOT_ADOPTED;
+	} else {
+		m_inputMode    = req.mode;
+		m_inputFlags   = req.flags;
+		m_inputDwellMs = req.dwell_ms;
+		m_inputDeadzone = req.deadzone;
 	}
 
 	sendCommandResult(requestId,
@@ -2129,6 +2136,7 @@ void BoardModule::publishRotationState(rotg_event_t evt)
 void BoardModule::dispatchApdsToProfiles(apds9960_gesture_t g)
 {
 	if (m_profiles == nullptr) return;
+	if (m_inputMode == board_InputMode_INPUT_MODE_DISABLED) return;
 
 	prof_src_t src;
 	bool pressed = true;
