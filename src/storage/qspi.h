@@ -10,8 +10,9 @@
  * transaction is fully confirmed (exact nonce + CLI flag or 3s A+B).
  *
  * The async adoption FSM runs long erase/verify work across multiple
- * tick() calls, feeding the watchdog between steps and reporting
- * progress via BoardStatus events.
+ * tick() calls, feeding the watchdog between steps. BoardModule emits
+ * BOARD_STATUS_STORAGE_PROGRESS events using progressCurrent() /
+ * progressTotal() at the start and completion of each transaction.
  *
  * Compiled only under BOARD_CLUE. Host tests exercise qspi_eval.c
  * directly without this wrapper.

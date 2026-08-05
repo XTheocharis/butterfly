@@ -199,6 +199,7 @@ private:
     uint32_t m_gestureEventSeq;
     bool     m_lastBtnA;
     bool     m_lastBtnB;
+    uint32_t m_btnPollNextMs;
 
     /* Helper: populate a board_SensorDescriptor from eval table. */
     void populateDescriptor(board_SensorDescriptor *out,

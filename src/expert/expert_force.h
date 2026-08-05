@@ -11,8 +11,9 @@
  * Non-cancellable operations (e.g., active streaming) are rejected
  * with NOT_CANCELLABLE rather than being torn down.
  *
- * Restore failure for any service must be reported as a BoardStatus
- * fault event — the caller is responsible for emitting that event.
+ * Restore failure for any service leaves it in FAULT state.
+ * The caller (BoardModule) is responsible for detecting faults via
+ * expert_force_has_fault() and emitting the appropriate status event.
  *
  * No SDK deps. Host-testable.
  */
@@ -85,13 +86,14 @@ expert_force_result_t expert_force_quiesce_complete(expert_force_service_t svc);
 expert_force_result_t expert_force_release(expert_force_service_t svc);
 
 /* Mark restore complete. If success=true → FREE. If success=false → FAULT.
- * A FAULT state means the service could not be restored and must be
- * reported via BoardStatus fault event. The service stays in FAULT
- * until expert_force_init() resets it or expert_force_clear_fault(). */
+ * A FAULT state means the service could not be restored. The caller
+ * (BoardModule) is responsible for emitting a BOARD_STATUS_RESOURCE_
+ * RESTORE_FAILED event if it detects a fault. The service stays in
+ * FAULT until expert_force_init() resets it or expert_force_clear_fault(). */
 expert_force_result_t expert_force_restore_complete(
 	expert_force_service_t svc, bool success);
 
-/* Clear a fault (after the BoardStatus event has been emitted). */
+/* Clear a fault (after the caller has handled it). */
 expert_force_result_t expert_force_clear_fault(expert_force_service_t svc);
 
 /* ---- Queries --------------------------------------------------------- */
@@ -101,7 +103,7 @@ expert_force_state_t expert_force_get_state(expert_force_service_t svc);
 /* Is the service currently displaced (owned by expert)? */
 bool expert_force_is_displaced(expert_force_service_t svc);
 
-/* Is any service in FAULT state? (Caller should emit BoardStatus.) */
+/* Is any service in FAULT state? (Caller checks then emits status.) */
 bool expert_force_has_fault(void);
 
 /* Get the first service in FAULT state, or -1 if none. */

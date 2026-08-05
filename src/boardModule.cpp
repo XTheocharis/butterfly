@@ -71,6 +71,7 @@ BoardModule::BoardModule(Core *core)
 	m_gestureEventSeq = 0;
 	m_lastBtnA = false;
 	m_lastBtnB = false;
+	m_btnPollNextMs = 0;
 #ifdef BOARD_CLUE
 	m_profiles = nullptr;
 	m_dashboardRegistered = false;
@@ -1873,6 +1874,13 @@ void BoardModule::handleStorageAdopt(uint32_t requestId,
 	sendCommandResult(requestId,
 	                  board_BoardCommand_StorageAdopt,
 	                  code);
+	if (started) {
+		sendBoardStatus(
+			board_BoardStatusCode_BOARD_STATUS_STORAGE_PROGRESS,
+			board_BoardResultCode_SUCCESS,
+			board_ResourceKind_RESOURCE_STORAGE, 0u, 0u, false,
+			"storage:adopt:start");
+	}
 #else
 	(void)req;
 	sendCommandResult(requestId,
@@ -1986,6 +1994,13 @@ void BoardModule::handleStorageEraseLog(uint32_t requestId,
 	                  board_BoardCommand_StorageEraseLog,
 	                  started ? board_BoardResultCode_SUCCESS
 	                          : board_BoardResultCode_BUSY);
+	if (started) {
+		sendBoardStatus(
+			board_BoardStatusCode_BOARD_STATUS_STORAGE_PROGRESS,
+			board_BoardResultCode_SUCCESS,
+			board_ResourceKind_RESOURCE_STORAGE, 0u, 0u, false,
+			"storage:erase:start");
+	}
 #else
 	(void)req;
 	sendCommandResult(requestId,
@@ -2023,9 +2038,14 @@ void BoardModule::injectApdsGesture(apds9960_gesture_t g)
 {
 #ifdef BOARD_CLUE
 	m_motion.feedApdsGesture(g);
-	/* Emit a GestureEvent so the host sees the decoded gesture in real
-	 * time, independent of any configured ProfileManager mapping. The
-	 * internal apds9960_gesture_t enum values match board_Gesture 1:1
+	/* NOTE: The GestureEvent emission below is currently UNREACHABLE in
+	 * production. The APDS9960 wrapper operates in optical-only mode
+	 * (RGBC color/proximity, Wave 5 T20 design). Gesture mode entry
+	 * requires enabling the APDS9960 gesture engine in the wrapper,
+	 * which is outside Wave 6 scope. See butterfly/AGENTS.md gap #4.
+	 * The code is intentionally retained: once gesture mode is wired
+	 * the emission path works with zero changes. The internal
+	 * apds9960_gesture_t enum values match board_Gesture 1:1
 	 * (UNKNOWN=0, UP=1, DOWN=2, LEFT=3, RIGHT=4, NEAR=5, FAR=6). */
 	if (g != APDS9960_GESTURE_NONE) {
 		sendGestureEvent(static_cast<board_Gesture>(
@@ -2041,7 +2061,7 @@ void BoardModule::injectButtons(bool button_a, bool button_b)
 #ifdef BOARD_CLUE
 	m_motion.feedButtons(button_a, button_b);
 	/* Emit InputEvent on each button edge (press/release). The CLUE
-	 * exposes two tactile buttons: A and B (P0.14 / P0.15). */
+	 * exposes two tactile buttons: A (P1.02) and B (P1.10). */
 	if (button_a != m_lastBtnA) {
 		sendInputEvent(
 			board_InputSource_INPUT_SOURCE_BUTTON_A,
@@ -2074,6 +2094,18 @@ void BoardModule::tick(void)
 {
 #ifdef BOARD_CLUE
 	uint64_t now_us = timebase_now_us();
+
+	/* Button poller (P1.02=A, P1.10=B, active-low with pull-up).
+	 * Poll every ~5ms; injectButtons handles edge detection. */
+	{
+		uint32_t now_ms = (uint32_t)(now_us / 1000ull);
+		if (now_ms >= m_btnPollNextMs) {
+			m_btnPollNextMs = now_ms + 5u;
+			bool pressed_a = (nrf_gpio_pin_read(BSP_BUTTON_0) == 0);
+			bool pressed_b = (nrf_gpio_pin_read(BSP_BUTTON_1) == 0);
+			injectButtons(pressed_a, pressed_b);
+		}
+	}
 
 	/* Drive the I2C sensor wrappers (IMU, mag, BMP280, SHT31D,
 	 * APDS9960). Completion callbacks call injectImu / injectMag /
@@ -2115,12 +2147,22 @@ void BoardModule::tick(void)
 			sendCommandResult(m_calibRequestId,
 			                  board_BoardCommand_Calibrate,
 			                  board_BoardResultCode_SUCCESS);
+			sendBoardStatus(
+				board_BoardStatusCode_BOARD_STATUS_CALIBRATION_PROGRESS,
+				board_BoardResultCode_SUCCESS,
+				board_ResourceKind_RESOURCE_UNKNOWN, 0u, 1000u, true,
+				"calibrate:done");
 			m_calibEmitMs = 0;
 		} else if (cr == MotionManager::CALIB_RESULT_FAILED) {
 			board_motion_calib_complete(&m_calibState);
 			sendCommandResult(m_calibRequestId,
 			                  board_BoardCommand_Calibrate,
 			                  board_BoardResultCode_SENSOR_FAULT);
+			sendBoardStatus(
+				board_BoardStatusCode_BOARD_STATUS_CALIBRATION_PROGRESS,
+				board_BoardResultCode_SENSOR_FAULT,
+				board_ResourceKind_RESOURCE_UNKNOWN, 0u, 0u, true,
+				"calibrate:failed");
 			m_calibEmitMs = 0;
 		} else if (emit_progress) {
 			m_calibEmitMs = now_ms;
@@ -2136,6 +2178,12 @@ void BoardModule::tick(void)
 				whad_board_command_result(resp, m_calibRequestId, &crp);
 				m_core->pushMessageToQueue(resp);
 			}
+			sendBoardStatus(
+				board_BoardStatusCode_BOARD_STATUS_CALIBRATION_PROGRESS,
+				board_BoardResultCode_SUCCESS,
+				board_ResourceKind_RESOURCE_UNKNOWN,
+				m_calibSensorId, (uint32_t)progress * 10u, false,
+				"calibrate:progress");
 		}
 	}
 
