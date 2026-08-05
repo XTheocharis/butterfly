@@ -284,11 +284,11 @@ runtime_switch_result_t runtime_request_switch(runtime_mode_t target)
 
 bool runtime_cdc_close_should_reset(void)
 {
-	/* Raw-WHAD preserves legacy CDC-close-reset behavior so the host
-	 * can force a device reset by closing and reopening the serial
-	 * port. BLE-HID must NOT reset on CDC close — an active HID
-	 * connection must survive the host closing the serial monitor. */
+#ifdef BOARD_CLUE
+	return false;
+#else
 	return (s_selected_mode == RUNTIME_RAW_WHAD);
+#endif
 }
 
 /* ---- Adopted-QSPI store validation (Todo 30) ------------------------- */
