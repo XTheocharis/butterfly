@@ -584,10 +584,82 @@ void BoardModule::handleReadSensor(uint32_t requestId,
 		       ? board_SensorStatusFlag_SENSOR_STATUS_NONE
 		       : board_SensorStatusFlag_SENSOR_STATUS_STALE;
 		sample.timestamp_us = timebase_now_us();
-	} else if (req.sensor_id == info->sensor_id) {
-		/* Non-motion sensors (env/color/proximity/gesture/audio):
-		 * no driver wired in this todo — STALE zeros is correct. */
-		status = board_SensorStatusFlag_SENSOR_STATUS_STALE;
+	} else {
+		/* Non-motion sensors 6-12: pull cached values from the
+		 * SensorDrivers wrappers (BMP280 / SHT31D / APDS-9960).
+		 * MotionManager::readSensor returns 0 for these IDs.
+		 * Gesture (12) stays STALE: gesture mode is not entered by
+		 * the optical-only APDS wrapper (T20); injectApdsGesture is
+		 * never called, so no cached gesture exists to surface. */
+		switch (req.sensor_id) {
+		case 6: { /* pressure (Pa) */
+			bmp280_sample_t s;
+			if (m_sensors.bmp280().getLatest(&s)) {
+				values[0] = (int32_t)s.pressure_pa;
+				n = 1;
+				status = board_SensorStatusFlag_SENSOR_STATUS_NONE;
+				sample.timestamp_us = timebase_now_us();
+			}
+			break;
+		}
+		case 7: { /* BMP280 temperature (milli-degC) */
+			bmp280_sample_t s;
+			if (m_sensors.bmp280().getLatest(&s)) {
+				values[0] = s.temp_milli_c;
+				n = 1;
+				status = board_SensorStatusFlag_SENSOR_STATUS_NONE;
+				sample.timestamp_us = timebase_now_us();
+			}
+			break;
+		}
+		case 8: { /* humidity (milli-%RH) */
+			sht31d_sample_t s;
+			if (m_sensors.sht31d().getLatest(&s)) {
+				values[0] = (int32_t)s.humidity_milli_rh;
+				n = 1;
+				status = board_SensorStatusFlag_SENSOR_STATUS_NONE;
+				sample.timestamp_us = timebase_now_us();
+			}
+			break;
+		}
+		case 9: { /* SHT31D temperature (milli-degC) */
+			sht31d_sample_t s;
+			if (m_sensors.sht31d().getLatest(&s)) {
+				values[0] = s.temp_milli_c;
+				n = 1;
+				status = board_SensorStatusFlag_SENSOR_STATUS_NONE;
+				sample.timestamp_us = timebase_now_us();
+			}
+			break;
+		}
+		case 10: { /* color (clear, red, green, blue counts) */
+			apds9960_optical_sample_t s;
+			if (m_sensors.apds9960().getLatestOptical(&s)) {
+				values[0] = (int32_t)s.clear;
+				values[1] = (int32_t)s.red;
+				values[2] = (int32_t)s.green;
+				values[3] = (int32_t)s.blue;
+				n = 4;
+				status = board_SensorStatusFlag_SENSOR_STATUS_NONE;
+				sample.timestamp_us = timebase_now_us();
+			}
+			break;
+		}
+		case 11: { /* proximity (0-255) */
+			apds9960_optical_sample_t s;
+			if (m_sensors.apds9960().getLatestOptical(&s)) {
+				values[0] = (int32_t)s.proximity;
+				n = 1;
+				status = board_SensorStatusFlag_SENSOR_STATUS_NONE;
+				sample.timestamp_us = timebase_now_us();
+			}
+			break;
+		}
+		case 12: /* gesture (enum) — see note above, stays STALE */
+		default:
+			status = board_SensorStatusFlag_SENSOR_STATUS_STALE;
+			break;
+		}
 	}
 #else
 	/* Host build (no MotionManager): return STALE zeros. */
