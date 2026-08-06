@@ -1,7 +1,7 @@
 /*
- * bmp280_driver.cpp - Bmp280Driver wrapping BMP280 i2cBus transfers.
+ * bmp280_driver.cpp - Bmp280Driver wrapping BMP280 sync I2C transfers.
  *
- * Async FSM: read 24-byte calibration -> write ctrl + config -> poll
+ * Sync FSM: read 24-byte calibration -> write ctrl + config -> poll
  * data at ~13 Hz -> compensate.  Cached for handleReadSensor.
  *
  * Sensors 6 (pressure Pa) + 7 (temperature milli-degC).
@@ -12,6 +12,7 @@
 
 #include <string.h>
 #include "../timebase.h"
+#include "../i2c_sync.h"
 
 /* Normal-mode period (~13 Hz from BMP280_CONTINUOUS_RATE_HZ). */
 #define BMP280_PERIOD_US  77000u
@@ -26,7 +27,6 @@ Bmp280Driver::Bmp280Driver()
 	: m_state(IDLE)
 	, m_present(false)
 	, m_fresh(false)
-	, m_active(false)
 	, m_configStep(0)
 	, m_nextUs(0)
 {
@@ -37,11 +37,6 @@ Bmp280Driver::Bmp280Driver()
 	m_tFine = 0;
 }
 
-void Bmp280Driver::s_completion(i2cbus_result_t r, void *user)
-{
-	static_cast<Bmp280Driver *>(user)->onComplete(r);
-}
-
 void Bmp280Driver::begin(uint64_t now_us)
 {
 	if (m_state != IDLE) return;
@@ -50,7 +45,6 @@ void Bmp280Driver::begin(uint64_t now_us)
 	m_state      = READING_CALIB;
 	m_nextUs     = now_us;
 	m_fresh      = false;
-	m_active     = false;
 	m_configStep = 0;
 }
 
@@ -61,110 +55,61 @@ bool Bmp280Driver::getLatest(bmp280_sample_t *out) const
 	return true;
 }
 
-/* m_active guards against re-enqueue while a transfer is outstanding:
- * i2cBus only allows one active transfer at a time, so a second enqueue
- * would be rejected anyway — m_active avoids the wasted call. */
+/* Sync FSM: each tick runs one blocking TWIM1 transfer (~1ms at 400kHz).
+ * Backoff 5ms on any error; retry from the current state on next tick. */
 void Bmp280Driver::tick(uint64_t now_us)
 {
-	if (!m_present || m_active || now_us < m_nextUs) return;
+	if (!m_present || now_us < m_nextUs) return;
 
 	switch (m_state) {
-	case READING_CALIB:
-		m_calibRaw[0] = BMP280_REG_CALIB;
-		{
-			i2cbus_transfer_t xfer;
-			memset(&xfer, 0, sizeof xfer);
-			xfer.addr       = BMP280_ADDR;
-			xfer.write_buf  = m_calibRaw;
-			xfer.write_len  = 1;
-			xfer.read_buf   = m_calibRaw;
-			xfer.read_len   = BMP280_CALIB_LEN;
-			xfer.completion = s_completion;
-			xfer.user       = this;
-			if (i2cbus_enqueue(&xfer) != I2CBUS_TOKEN_INVALID) {
-				m_active = true;
-			}
-		}
-		return;
-
-	case WRITING_CTRL:
-		if (m_configStep >= 2) {
-			/* Both ctrl writes done — enter active sampling. */
-			m_state  = READING_DATA;
-			m_nextUs = now_us + BMP280_CONV_FORCED_DEFAULT_US;
+	case READING_CALIB: {
+		i2c_sync_result_t r = i2c_sync_read_reg(BMP280_ADDR, BMP280_REG_CALIB,
+		                                        m_calibRaw, BMP280_CALIB_LEN);
+		if (r != I2C_SYNC_OK) {
+			m_nextUs = now_us + 5000u;
 			return;
 		}
+		bmp280_parse_calib(m_calibRaw, &m_calib);
+		m_state  = WRITING_CTRL;
+		m_nextUs = now_us;
+		return;
+	}
+
+	case WRITING_CTRL: {
 		m_dataBuf[0] = BMP280_INIT_SEQ[m_configStep][0];
 		m_dataBuf[1] = BMP280_INIT_SEQ[m_configStep][1];
-		{
-			i2cbus_transfer_t xfer;
-			memset(&xfer, 0, sizeof xfer);
-			xfer.addr       = BMP280_ADDR;
-			xfer.write_buf  = m_dataBuf;
-			xfer.write_len  = 2;
-			xfer.completion = s_completion;
-			xfer.user       = this;
-			if (i2cbus_enqueue(&xfer) != I2CBUS_TOKEN_INVALID) {
-				m_active = true;
-			}
+		i2c_sync_result_t r = i2c_sync_write(BMP280_ADDR, m_dataBuf, 2);
+		if (r != I2C_SYNC_OK) {
+			m_nextUs = now_us + 5000u;
+			return;
+		}
+		m_configStep++;
+		if (m_configStep >= 2) {
+			/* Both ctrl writes done — enter active sampling.
+			 * One-time forced conversion delay before first data read. */
+			m_state  = READING_DATA;
+			m_nextUs = now_us + BMP280_CONV_FORCED_DEFAULT_US;
+		} else {
+			m_nextUs = now_us;
 		}
 		return;
+	}
 
-	case READING_DATA:
-		m_dataBuf[0] = BMP280_REG_DATA;
-		{
-			i2cbus_transfer_t xfer;
-			memset(&xfer, 0, sizeof xfer);
-			xfer.addr       = BMP280_ADDR;
-			xfer.write_buf  = m_dataBuf;
-			xfer.write_len  = 1;
-			xfer.read_buf   = m_dataBuf;
-			xfer.read_len   = BMP280_BURST_LEN;
-			xfer.completion = s_completion;
-			xfer.user       = this;
-			if (i2cbus_enqueue(&xfer) != I2CBUS_TOKEN_INVALID) {
-				m_active = true;
-			}
+	case READING_DATA: {
+		i2c_sync_result_t r = i2c_sync_read_reg(BMP280_ADDR, BMP280_REG_DATA,
+		                                        m_dataBuf, BMP280_BURST_LEN);
+		if (r != I2C_SYNC_OK) {
+			m_nextUs = now_us + 5000u;
+			return;
 		}
+		bmp280_compensate(m_dataBuf, &m_calib, &m_tFine, &m_last);
+		m_fresh  = true;
+		m_nextUs = now_us + BMP280_PERIOD_US;
 		return;
+	}
 
 	case IDLE:
 	default:
-		return;
-	}
-}
-
-void Bmp280Driver::onComplete(i2cbus_result_t r)
-{
-	m_active = false;
-	uint64_t now = timebase_now_us();
-
-	if (r != I2CBUS_OK) {
-		/* Back off briefly; retry from current state on next tick. */
-		m_nextUs = now + 5000u;
-		return;
-	}
-
-	switch (m_state) {
-	case READING_CALIB:
-		bmp280_parse_calib(m_calibRaw, &m_calib);
-		m_state  = WRITING_CTRL;
-		m_nextUs = now;
-		return;
-
-	case WRITING_CTRL:
-		m_configStep++;
-		m_nextUs = now;
-		return;
-
-	case READING_DATA:
-		bmp280_compensate(m_dataBuf, &m_calib, &m_tFine, &m_last);
-		m_fresh  = true;
-		m_nextUs = now + BMP280_PERIOD_US;
-		return;
-
-	default:
-		m_nextUs = now;
 		return;
 	}
 }
