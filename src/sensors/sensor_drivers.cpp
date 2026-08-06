@@ -1,8 +1,8 @@
 /*
  * sensor_drivers.cpp - SensorDrivers aggregator implementation.
  *
- * Owns the 5 wrapper instances + drives i2cbus_tick each pass.
- * T21 constructs this inside BoardModule and forwards ticks.
+ * Owns the 5 wrapper instances and forwards ticks to each.
+ * T21 constructs this inside BoardModule.
  */
 #include "sensor_drivers.h"
 
@@ -49,17 +49,14 @@ void SensorDrivers::tick(uint64_t now_us)
 {
 	if (!m_inited) return;
 
-	/* Drive each sensor's FSM. They enqueue transfers as needed; the
-	 * i2cbus_tick() call below drains the queue and fires completions
-	 * (which in turn advance each sensor's state on the next tick). */
+	/* Drive each sensor's FSM. Sync drivers call i2c_sync_* directly
+	 * (raw TWIM1 registers, polling on EVENTS) — no async bus pump
+	 * here, it would race with the sync transfers. */
 	m_imu.tick(now_us);
 	m_mag.tick(now_us);
 	m_bmp.tick(now_us);
 	m_sht.tick(now_us);
 	m_apds.tick(now_us);
-
-	/* Pump the bus manager so queued transfers start and complete. */
-	i2cbus_tick();
 }
 
 bool SensorDrivers::isAnyPresent() const

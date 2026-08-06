@@ -75,6 +75,7 @@ BoardModule::BoardModule(Core *core)
 	m_lastBtnB = false;
 	m_btnPollNextMs = 0;
 	m_tickStartMs = 0;
+	m_sensorsInitPending = false;
 #ifdef BOARD_CLUE
 	m_profiles = nullptr;
 	m_dashboardRegistered = false;
@@ -174,8 +175,7 @@ void BoardModule::initHardware()
 	if (i2c_be != NULL) {
 		i2cbus_init(i2c_be, (uint32_t)i2c_lease);
 	}
-	syncProbeSensors();
-	(void)m_sensors.init(timebase_now_us(), 0);
+	m_sensorsInitPending = true;
 #endif
 }
 
@@ -2170,6 +2170,19 @@ void BoardModule::tick(void)
 	 * directly (Adafruit Wire pattern: raw TWIM1 registers, polling
 	 * on EVENTS). Completion feeds MotionManager's cache via the
 	 * inject* callbacks below before the motion tick consumes it. */
+
+	/* Deferred sensor init: TWIM1 needs settling time after nrfx_twim_init
+	 * before synchronous transfers succeed. Probe presence + init drivers
+	 * after a 50ms grace period (verified working on live CLUE: P=0x1F). */
+	if (m_sensorsInitPending) {
+		uint32_t elapsed_ms = (uint32_t)(now_us / 1000ull) - m_tickStartMs;
+		if (elapsed_ms > 50u) {
+			m_sensorsInitPending = false;
+			syncProbeSensors();
+			(void)m_sensors.init(now_us, 0);
+		}
+	}
+
 	m_sensors.tick(now_us);
 
 	/* Drive the motion subsystem one step. The rotation-gesture FSM
