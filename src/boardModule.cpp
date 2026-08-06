@@ -112,6 +112,42 @@ BoardModule::BoardModule(Core *core)
 #endif
 }
 
+/* Synchronous I2C probe using raw TWIM1 register polling.
+ * The async IRQ-driven probe path doesn't work (TWIM IRQ not firing
+ * reliably in this boot configuration). This replaces it with a
+ * blocking poll — ~1ms per sensor, 5ms total, called from tick()
+ * after USB enumeration is stable. */
+static const uint8_t PROBE_ADDRS[] = {0x6A, 0x1C, 0x39, 0x44, 0x77};
+static const uint8_t PROBE_REGS[]  = {0x0F, 0x0F, 0x92, 0x00, 0xD0};
+void BoardModule::syncProbeSensors(void)
+{
+#ifdef BOARD_CLUE
+	NRF_TWIM_Type *p = NRF_TWIM1;
+	for (size_t i = 0; i < sizeof(PROBE_ADDRS); i++) {
+		uint8_t reg = PROBE_REGS[i];
+		uint8_t val = 0xFF;
+		p->ADDRESS = PROBE_ADDRS[i];
+		p->TXD.PTR = (uint32_t)&reg;
+		p->TXD.MAXCNT = 1;
+		p->RXD.PTR = (uint32_t)&val;
+		p->RXD.MAXCNT = 1;
+		p->EVENTS_STOPPED = 0;
+		p->EVENTS_ERROR = 0;
+		p->EVENTS_LASTTX = 0;
+		p->EVENTS_LASTRX = 0;
+		p->SHORTS = TWIM_SHORTS_LASTTX_STARTRX_Msk | TWIM_SHORTS_LASTRX_STOP_Msk;
+		p->TASKS_STARTTX = 1;
+		for (int j = 0; j < 50000 && !p->EVENTS_LASTRX && !p->EVENTS_ERROR; j++) { __NOP(); }
+		p->TASKS_STOP = 1;
+		for (int j = 0; j < 5000 && !p->EVENTS_STOPPED; j++) { __NOP(); }
+		if (!p->EVENTS_ERROR && val != 0xFF && val != 0x00) {
+			i2cbus_force_presence(PROBE_ADDRS[i]);
+		}
+	}
+	p->SHORTS = 0;
+#endif
+}
+
 void BoardModule::initHardware()
 {
 #ifdef BOARD_CLUE
@@ -133,7 +169,6 @@ void BoardModule::initHardware()
 	const i2cbus_backend_t *i2c_be = i2c_twim_backend_get();
 	if (i2c_be != NULL) {
 		i2cbus_init(i2c_be, (uint32_t)i2c_lease);
-		i2cbus_probe_all();
 	}
 	m_sensorsInitPending = true;
 #endif
@@ -2133,14 +2168,17 @@ void BoardModule::tick(void)
 	 * probes drain, then init sensor wrappers so begin() sees the
 	 * correct presence bits. */
 	if (m_sensorsInitPending) {
+		i2c_twim_poll();
 		i2cbus_tick();
 		uint32_t elapsed_ms = (uint32_t)(now_us / 1000ull) - m_tickStartMs;
-		if (!i2cbus_probe_busy() || elapsed_ms > 500u) {
+		if (!i2cbus_probe_busy() || elapsed_ms > 50u) {
 			m_sensorsInitPending = false;
+			syncProbeSensors();
 			(void)m_sensors.init(now_us, 0);
 		}
 	}
 
+	i2c_twim_poll();
 	m_sensors.tick(now_us);
 
 	/* Drive the motion subsystem one step. The rotation-gesture FSM

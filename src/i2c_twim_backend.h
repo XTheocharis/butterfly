@@ -29,8 +29,7 @@ extern "C" {
  * Caller passes the resulting struct to i2cbus_init().
  * Returns NULL if nrfx_twim_init fails (then caller skips i2cBus). */
 const i2cbus_backend_t *i2c_twim_backend_get(void);
-
-/* True once TWIM1 has been successfully initialized. */
+void i2c_twim_poll(void);
 int i2c_twim_backend_is_ready(void);
 
 #ifdef __cplusplus

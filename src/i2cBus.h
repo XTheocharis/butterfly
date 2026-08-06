@@ -151,6 +151,7 @@ typedef enum {
 
 void     i2cbus_probe_all(void);
 bool     i2cbus_probe_busy(void);
+void     i2cbus_force_presence(uint8_t addr);
 uint32_t i2cbus_get_presence(void);
 bool     i2cbus_is_present(uint8_t addr);
 i2cbus_device_id_t i2cbus_get_device_id(uint8_t addr);

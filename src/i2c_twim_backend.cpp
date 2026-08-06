@@ -28,30 +28,7 @@ static bool        s_ready;
 static uint8_t *s_cur_read_buf;
 static size_t   s_cur_read_len;
 
-/* ---- ISR event handler ----------------------------------------------- */
-
-static void twim_event_handler(nrfx_twim_evt_t const *event,
-                               void *                 /*p_context*/)
-{
-	i2cbus_result_t r;
-	switch (event->type) {
-	case NRFX_TWIM_EVT_DONE:
-		r = I2CBUS_OK;
-		break;
-	case NRFX_TWIM_EVT_ADDRESS_NACK:
-	case NRFX_TWIM_EVT_DATA_NACK:
-		r = I2CBUS_ERR_NACK;
-		break;
-	case NRFX_TWIM_EVT_OVERRUN:
-		r = I2CBUS_ERR_BUS;
-		break;
-	case NRFX_TWIM_EVT_BUS_ERROR:
-	default:
-		r = I2CBUS_ERR_BUS;
-		break;
-	}
-	i2cbus_report_xfer_complete(r);
-}
+/* Completion is polled from i2c_twim_poll() in the main loop, not via ISR. */
 
 /* ---- start_xfer: enqueue a TWIM transfer ----------------------------- */
 
@@ -59,44 +36,38 @@ static int twim_start_xfer(uint8_t addr,
                            const uint8_t *write_buf, size_t write_len,
                            uint8_t *read_buf, size_t read_len)
 {
-	if (!s_ready) {
-		return -1;
+	if (!s_ready) return -1;
+
+	NRF_TWIM_Type *p = s_twim.p_twim;
+	p->ADDRESS = addr;
+	p->TXD.PTR = (uint32_t)write_buf;
+	p->TXD.MAXCNT = (uint16_t)write_len;
+	p->RXD.PTR = (uint32_t)read_buf;
+	p->RXD.MAXCNT = (uint16_t)read_len;
+	p->EVENTS_STOPPED = 0;
+	p->EVENTS_ERROR = 0;
+	p->EVENTS_SUSPENDED = 0;
+	p->EVENTS_RXSTARTED = 0;
+	p->EVENTS_TXSTARTED = 0;
+	p->EVENTS_LASTTX = 0;
+	p->EVENTS_LASTRX = 0;
+
+	if (write_len > 0 && read_len > 0)
+	{
+		p->SHORTS = TWIM_SHORTS_LASTTX_STARTRX_Msk | TWIM_SHORTS_LASTRX_STOP_Msk;
 	}
-
-	nrfx_twim_xfer_desc_t desc;
-	memset(&desc, 0, sizeof desc);
-	desc.address = addr;
-
-	if (write_len > 0 && read_len > 0) {
-		desc.type             = NRFX_TWIM_XFER_TXRX;
-		desc.primary_length   = write_len;
-		desc.secondary_length = read_len;
-		desc.p_primary_buf    = (uint8_t *)write_buf;
-		desc.p_secondary_buf  = read_buf;
-	} else if (write_len > 0) {
-		desc.type             = NRFX_TWIM_XFER_TX;
-		desc.primary_length   = write_len;
-		desc.p_primary_buf    = (uint8_t *)write_buf;
-	} else if (read_len > 0) {
-		desc.type             = NRFX_TWIM_XFER_RX;
-		desc.primary_length   = read_len;
-		desc.p_primary_buf    = read_buf;
-	} else {
-		/* Nothing to do — caller error. Report OK so the i2cBus FSM
-		 * clears the active transfer without triggering recovery. */
-		i2cbus_report_xfer_complete(I2CBUS_OK);
-		return 0;
+	else if (write_len > 0)
+	{
+		p->SHORTS = TWIM_SHORTS_LASTTX_STOP_Msk;
+	}
+	else
+	{
+		p->SHORTS = TWIM_SHORTS_LASTRX_STOP_Msk;
 	}
 
 	s_cur_read_buf = read_buf;
 	s_cur_read_len = read_len;
-
-	nrfx_err_t err = nrfx_twim_xfer(&s_twim, &desc, 0);
-	if (err != NRFX_SUCCESS) {
-		/* Could not start: report BUS error so i2cBus enters recovery. */
-		i2cbus_report_xfer_complete(I2CBUS_ERR_BUS);
-		return -1;
-	}
+	p->TASKS_STARTTX = 1;
 	return 0;
 }
 
@@ -145,8 +116,11 @@ static void twim_gen_stop(void)
 
 static void twim_reinit_twim(void)
 {
-	nrfx_twim_disable(&s_twim);
-	nrfx_twim_enable(&s_twim);
+	NRF_TWIM_Type *p = s_twim.p_twim;
+	p->TASKS_STOP = 1;
+	for (int i = 0; i < 1000; i++) { __NOP(); }
+	p->ENABLE = 0;
+	p->ENABLE = TWIM_ENABLE_ENABLE_Enabled << TWIM_ENABLE_ENABLE_Pos;
 }
 
 static uint64_t twim_now_us(void)
@@ -180,7 +154,7 @@ const i2cbus_backend_t *i2c_twim_backend_get(void)
 	cfg.interrupt_priority = I2CBUS_IRQ_PRIORITY;
 	cfg.hold_bus_uninit    = false;
 
-	nrfx_err_t err = nrfx_twim_init(&s_twim, &cfg, twim_event_handler, NULL);
+	nrfx_err_t err = nrfx_twim_init(&s_twim, &cfg, NULL, NULL);
 	if (err != NRFX_SUCCESS) {
 		return NULL;
 	}
@@ -192,6 +166,39 @@ const i2cbus_backend_t *i2c_twim_backend_get(void)
 int i2c_twim_backend_is_ready(void)
 {
 	return s_ready ? 1 : 0;
+}
+
+void i2c_twim_poll(void)
+{
+	if (!s_ready) return;
+	NRF_TWIM_Type *p = s_twim.p_twim;
+	if (p->EVENTS_ERROR)
+	{
+		uint32_t err = p->ERRORSRC;
+		p->EVENTS_ERROR = 0;
+		p->ERRORSRC = err;
+		i2cbus_result_t r = (err & TWIM_ERRORSRC_DNACK_Msk) ?
+			I2CBUS_ERR_NACK : I2CBUS_ERR_BUS;
+		i2cbus_report_xfer_complete(r);
+		return;
+	}
+	if (p->EVENTS_STOPPED)
+	{
+		p->EVENTS_STOPPED = 0;
+		i2cbus_report_xfer_complete(I2CBUS_OK);
+		return;
+	}
+	if (p->EVENTS_LASTRX)
+	{
+		p->EVENTS_LASTRX = 0;
+		p->TASKS_STOP = 1;
+		return;
+	}
+	if (p->EVENTS_LASTTX)
+	{
+		p->EVENTS_LASTTX = 0;
+		return;
+	}
 }
 
 #endif /* BOARD_CLUE */
