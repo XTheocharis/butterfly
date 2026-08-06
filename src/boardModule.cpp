@@ -75,7 +75,6 @@ BoardModule::BoardModule(Core *core)
 	m_lastBtnB = false;
 	m_btnPollNextMs = 0;
 	m_tickStartMs = 0;
-	m_sensorsInitPending = false;
 #ifdef BOARD_CLUE
 	m_profiles = nullptr;
 	m_dashboardRegistered = false;
@@ -136,15 +135,20 @@ void BoardModule::syncProbeSensors(void)
 		p->EVENTS_LASTTX = 0;
 		p->EVENTS_LASTRX = 0;
 		p->SHORTS = TWIM_SHORTS_LASTTX_STARTRX_Msk | TWIM_SHORTS_LASTRX_STOP_Msk;
+		p->TASKS_RESUME = 1;
 		p->TASKS_STARTTX = 1;
 		for (int j = 0; j < 50000 && !p->EVENTS_LASTRX && !p->EVENTS_ERROR; j++) { __NOP(); }
 		p->TASKS_STOP = 1;
 		for (int j = 0; j < 5000 && !p->EVENTS_STOPPED; j++) { __NOP(); }
-		if (!p->EVENTS_ERROR && val != 0xFF && val != 0x00) {
+		p->SHORTS = 0;
+		p->EVENTS_STOPPED = 0;
+		uint32_t errsrc = p->ERRORSRC;
+		p->EVENTS_ERROR = 0;
+		p->ERRORSRC = errsrc;
+		if (!errsrc && val != 0xFF && val != 0x00) {
 			i2cbus_force_presence(PROBE_ADDRS[i]);
 		}
 	}
-	p->SHORTS = 0;
 #endif
 }
 
@@ -170,7 +174,8 @@ void BoardModule::initHardware()
 	if (i2c_be != NULL) {
 		i2cbus_init(i2c_be, (uint32_t)i2c_lease);
 	}
-	m_sensorsInitPending = true;
+	syncProbeSensors();
+	(void)m_sensors.init(timebase_now_us(), 0);
 #endif
 }
 
@@ -632,6 +637,7 @@ void BoardModule::handleReadSensor(uint32_t requestId,
 #ifdef BOARD_CLUE
 	MotionManager::SampleStatus ss = MotionManager::STALE;
 	uint32_t n = m_motion.readSensor(req.sensor_id, values, &ss);
+
 	if (n > 0) {
 		status = (ss == MotionManager::FRESH)
 		       ? board_SensorStatusFlag_SENSOR_STATUS_NONE
@@ -2160,25 +2166,10 @@ void BoardModule::tick(void)
 	}
 
 	/* Drive the I2C sensor wrappers (IMU, mag, BMP280, SHT31D,
-	 * APDS9960). Completion callbacks call injectImu / injectMag /
-	 * injectApdsGesture, which feed MotionManager's cache before
-	 * the motion tick below consumes it. */
-	/* Deferred sensor init: i2cbus probes are async (complete via
-	 * TWIM IRQs between tick calls). Pump the bus each tick until
-	 * probes drain, then init sensor wrappers so begin() sees the
-	 * correct presence bits. */
-	if (m_sensorsInitPending) {
-		i2c_twim_poll();
-		i2cbus_tick();
-		uint32_t elapsed_ms = (uint32_t)(now_us / 1000ull) - m_tickStartMs;
-		if (!i2cbus_probe_busy() || elapsed_ms > 50u) {
-			m_sensorsInitPending = false;
-			syncProbeSensors();
-			(void)m_sensors.init(now_us, 0);
-		}
-	}
-
-	i2c_twim_poll();
+	 * APDS9960). The drivers call the synchronous i2c_sync_* API
+	 * directly (Adafruit Wire pattern: raw TWIM1 registers, polling
+	 * on EVENTS). Completion feeds MotionManager's cache via the
+	 * inject* callbacks below before the motion tick consumes it. */
 	m_sensors.tick(now_us);
 
 	/* Drive the motion subsystem one step. The rotation-gesture FSM

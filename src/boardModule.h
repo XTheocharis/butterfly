@@ -202,7 +202,6 @@ private:
     bool     m_lastBtnB;
     uint32_t m_btnPollNextMs;
     uint32_t m_tickStartMs;
-    bool m_sensorsInitPending;
     void syncProbeSensors(void);
 
     /* Helper: populate a board_SensorDescriptor from eval table. */

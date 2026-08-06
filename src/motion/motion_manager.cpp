@@ -122,30 +122,42 @@ uint32_t MotionManager::readSensor(uint32_t sensor_id,
 	switch (sensor_id) {
 
 	case IMU_SENSOR_ID_ACCEL: /* 1 */
+		if (!m_imuFresh) {
+			if (out_status != nullptr) *out_status = STALE;
+			return 0;
+		}
 		out_values[0] = m_lastImu.accel_x_mg;
 		out_values[1] = m_lastImu.accel_y_mg;
 		out_values[2] = m_lastImu.accel_z_mg;
-		if (m_imuFresh && out_status != nullptr) {
+		if (out_status != nullptr) {
 			*out_status = FRESH;
 			m_imuFresh = false;
 		}
 		return 3;
 
 	case IMU_SENSOR_ID_GYRO: /* 2 */
+		if (!m_imuFresh) {
+			if (out_status != nullptr) *out_status = STALE;
+			return 0;
+		}
 		out_values[0] = m_lastImu.gyro_x_mdps;
 		out_values[1] = m_lastImu.gyro_y_mdps;
 		out_values[2] = m_lastImu.gyro_z_mdps;
-		if (m_imuFresh && out_status != nullptr) {
+		if (out_status != nullptr) {
 			*out_status = FRESH;
 			m_imuFresh = false;
 		}
 		return 3;
 
 	case MAG_SENSOR_ID: /* 3 */
+		if (!m_magFresh) {
+			if (out_status != nullptr) *out_status = STALE;
+			return 0;
+		}
 		out_values[0] = m_lastMag.x_mg;
 		out_values[1] = m_lastMag.y_mg;
 		out_values[2] = m_lastMag.z_mg;
-		if (m_magFresh && out_status != nullptr) {
+		if (out_status != nullptr) {
 			*out_status = FRESH;
 			m_magFresh = false;
 		}
