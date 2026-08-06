@@ -50,12 +50,9 @@ public:
 	bool isPresent() const { return m_present; }
 private:
 	enum State { IDLE, CONFIGURING, ACTIVE };
-	static void s_completion(i2cbus_result_t r, void *user);
-	void onComplete(i2cbus_result_t r);
 	BoardModule *m_bm;
 	State    m_state;
 	uint8_t  m_configStep;
-	bool     m_active;
 	bool     m_present;
 	bool     m_fresh;
 	uint64_t m_nextUs;
@@ -75,12 +72,9 @@ public:
 	bool isPresent() const { return m_present; }
 private:
 	enum State { IDLE, CONFIGURING, ACTIVE };
-	static void s_completion(i2cbus_result_t r, void *user);
-	void onComplete(i2cbus_result_t r);
 	BoardModule *m_bm;
 	State    m_state;
 	uint8_t  m_configStep;
-	bool     m_active;
 	bool     m_present;
 	bool     m_fresh;
 	uint64_t m_nextUs;
@@ -90,7 +84,7 @@ private:
 
 /* ---- Bmp280Driver (BMP280) -------------------------------------------
  * Sensors 6 (pressure Pa) + 7 (temperature milli-degC).
- * Async FSM: read 24-byte calibration -> write ctrl -> periodic forced
+ * Sync FSM: read 24-byte calibration -> write ctrl -> periodic
  * conversions. Cached for handleReadSensor. */
 class Bmp280Driver {
 public:
@@ -101,12 +95,9 @@ public:
 	bool getLatest(bmp280_sample_t *out) const;
 private:
 	enum State { IDLE, READING_CALIB, WRITING_CTRL, READING_DATA };
-	static void s_completion(i2cbus_result_t r, void *user);
-	void onComplete(i2cbus_result_t r);
 	State          m_state;
 	bool           m_present;
 	bool           m_fresh;
-	bool           m_active;
 	uint8_t        m_configStep;
 	uint64_t       m_nextUs;
 	uint8_t        m_calibRaw[BMP280_CALIB_LEN];
@@ -129,12 +120,9 @@ public:
 	bool getLatest(sht31d_sample_t *out) const;
 private:
 	enum State { IDLE, WRITING_CMD, CONVERTING, READING };
-	static void s_completion(i2cbus_result_t r, void *user);
-	void onComplete(i2cbus_result_t r);
 	State         m_state;
 	bool          m_present;
 	bool          m_fresh;
-	bool          m_active;
 	uint64_t      m_nextUs;
 	uint64_t      m_convertDeadline;
 	uint8_t       m_resp[SHT31D_RESP_LEN];
@@ -156,12 +144,9 @@ public:
 	bool getLatestOptical(apds9960_optical_sample_t *out) const;
 private:
 	enum State { IDLE, CONFIGURING, OPTICAL_BURST, READING_PROX };
-	static void s_completion(i2cbus_result_t r, void *user);
-	void onComplete(i2cbus_result_t r);
 	BoardModule *m_bm;
 	State         m_state;
 	uint8_t       m_configStep;
-	bool          m_active;
 	bool          m_present;
 	bool          m_fresh;
 	uint64_t      m_nextUs;
