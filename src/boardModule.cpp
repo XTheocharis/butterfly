@@ -168,6 +168,7 @@ void BoardModule::initHardware()
 		}
 	}
 	(void)m_pdm.init();
+	(void)m_pdm.start();
 
 	/* QSPI is not populated on the CLUE. Disable the peripheral to release
 	 * its PSEL-claimed pins for TWIM1 use. Done unconditionally after the
@@ -886,6 +887,11 @@ void BoardModule::handleReadSensor(uint32_t requestId,
 			const pdm_metrics_t *m = m_pdm.getLatestMetrics();
 			if (m != nullptr) {
 				values[0] = m->dbfs_x1000;
+				n = 1;
+				status = board_SensorStatusFlag_SENSOR_STATUS_NONE;
+				sample.timestamp_us = timebase_now_us();
+			} else {
+				values[0] = m_pdm.getInitResult() * 1000 + m_pdm.getStartResult();
 				n = 1;
 				status = board_SensorStatusFlag_SENSOR_STATUS_NONE;
 				sample.timestamp_us = timebase_now_us();

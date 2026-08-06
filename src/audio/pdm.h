@@ -89,6 +89,8 @@ public:
 
     /* Get count of DMA overruns detected since init (0 if none). */
     uint32_t getOverrunCount(void) const { return m_overrunCount; }
+    int getInitResult(void) const { return m_initResult; }
+    int getStartResult(void) const { return m_startResult; }
 
 private:
     bool m_initialized;
@@ -100,6 +102,10 @@ private:
     pdm_pcm_state_t m_pcmState;
     pdm_threshold_state_t m_threshold;
     uint32_t m_overrunCount;
+
+    /* Diagnostic: track init failure point (0=ok, -1=pinreg, -2=nrfx, 1=success) */
+    int m_initResult;
+    int m_startResult;
 
     /* Double-buffered DMA buffers in RAM (EasyDMA requirement). */
     static const uint32_t DMA_BUF_SAMPLES = PDM_DMA_BUF_SAMPLES;

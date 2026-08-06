@@ -70,6 +70,8 @@ PdmMicrophone::PdmMicrophone()
     , m_gain_reg(PDM_GAIN_DEFAULT)
     , m_hasMetrics(false)
     , m_overrunCount(0)
+    , m_initResult(0)
+    , m_startResult(0)
 {
     pdm_window_init(&m_window);
     memset(&m_latestMetrics, 0, sizeof(m_latestMetrics));
@@ -83,6 +85,9 @@ PdmMicrophone::PdmMicrophone()
     s_pcmSamplesAvailable = 0;
 }
 
+/* No-op restore callback for pin registry (PDM never releases its pins). */
+static void pdm_restore_noop(pinreg_group_t, uint8_t) {}
+
 bool PdmMicrophone::init(void)
 {
     if (m_initialized) {
@@ -92,8 +97,9 @@ bool PdmMicrophone::init(void)
     /* Acquire PDM pin group (P0.00 DATA + P0.01 CLK). */
     pinreg_token_t token;
     pinreg_result_t rc = pinreg_acquire_group(
-        PINREG_GROUP_PDM, PINREG_OWNER_AUDIO, NULL, &token);
+        PINREG_GROUP_PDM, PINREG_OWNER_AUDIO, pdm_restore_noop, &token);
     if (rc != PINREG_OK) {
+        m_initResult = -1;
         return false;
     }
 
@@ -109,17 +115,20 @@ bool PdmMicrophone::init(void)
 
     nrfx_err_t err = nrfx_pdm_init(&config, pdm_handler);
     if (err != NRFX_SUCCESS) {
+        m_initResult = -2;
         pinreg_release(token);
         return false;
     }
 
     m_initialized = true;
+    m_initResult = 1;
     return true;
 }
 
 bool PdmMicrophone::start(void)
 {
     if (!m_initialized || m_running) {
+        m_startResult = m_running ? 1 : -3;
         return m_running;
     }
 
