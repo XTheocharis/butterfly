@@ -341,6 +341,10 @@ void i2cbus_probe_all(void) {
 	probeStartNext();
 }
 
+bool i2cbus_probe_busy(void) {
+	return g_probeIdx != 0;
+}
+
 uint32_t i2cbus_get_presence(void) { return g_presence; }
 
 bool i2cbus_is_present(uint8_t addr) {

@@ -75,6 +75,7 @@ BoardModule::BoardModule(Core *core)
 	m_lastBtnB = false;
 	m_btnPollNextMs = 0;
 	m_tickStartMs = 0;
+	m_sensorsInitPending = false;
 #ifdef BOARD_CLUE
 	m_profiles = nullptr;
 	m_dashboardRegistered = false;
@@ -134,7 +135,7 @@ void BoardModule::initHardware()
 		i2cbus_init(i2c_be, (uint32_t)i2c_lease);
 		i2cbus_probe_all();
 	}
-	(void)m_sensors.init(timebase_now_us(), 0);
+	m_sensorsInitPending = true;
 #endif
 }
 
@@ -2127,6 +2128,19 @@ void BoardModule::tick(void)
 	 * APDS9960). Completion callbacks call injectImu / injectMag /
 	 * injectApdsGesture, which feed MotionManager's cache before
 	 * the motion tick below consumes it. */
+	/* Deferred sensor init: i2cbus probes are async (complete via
+	 * TWIM IRQs between tick calls). Pump the bus each tick until
+	 * probes drain, then init sensor wrappers so begin() sees the
+	 * correct presence bits. */
+	if (m_sensorsInitPending) {
+		i2cbus_tick();
+		uint32_t elapsed_ms = (uint32_t)(now_us / 1000ull) - m_tickStartMs;
+		if (!i2cbus_probe_busy() || elapsed_ms > 500u) {
+			m_sensorsInitPending = false;
+			(void)m_sensors.init(now_us, 0);
+		}
+	}
+
 	m_sensors.tick(now_us);
 
 	/* Drive the motion subsystem one step. The rotation-gesture FSM
