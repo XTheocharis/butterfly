@@ -74,6 +74,7 @@ BoardModule::BoardModule(Core *core)
 	m_lastBtnA = false;
 	m_lastBtnB = false;
 	m_btnPollNextMs = 0;
+	m_tickStartMs = 0;
 #ifdef BOARD_CLUE
 	m_profiles = nullptr;
 	m_dashboardRegistered = false;
@@ -2103,10 +2104,18 @@ void BoardModule::tick(void)
 	uint64_t now_us = timebase_now_us();
 
 	/* Button poller (P1.02=A, P1.10=B, active-low with pull-up).
-	 * Poll every ~5ms; injectButtons handles edge detection. */
+	 * Poll every ~5ms; injectButtons handles edge detection.
+	 * 500ms boot grace period lets pull-ups settle and USB enumerate
+	 * before sampling edges — prevents spurious InputEvents on boot. */
 	{
 		uint32_t now_ms = (uint32_t)(now_us / 1000ull);
-		if (now_ms >= m_btnPollNextMs) {
+		if (m_tickStartMs == 0) {
+			m_tickStartMs = now_ms;
+			m_lastBtnA = (nrf_gpio_pin_read(BSP_BUTTON_0) == 0);
+			m_lastBtnB = (nrf_gpio_pin_read(BSP_BUTTON_1) == 0);
+		}
+		if ((now_ms - m_tickStartMs >= 500u) &&
+		    now_ms >= m_btnPollNextMs) {
 			m_btnPollNextMs = now_ms + 5u;
 			bool pressed_a = (nrf_gpio_pin_read(BSP_BUTTON_0) == 0);
 			bool pressed_b = (nrf_gpio_pin_read(BSP_BUTTON_1) == 0);

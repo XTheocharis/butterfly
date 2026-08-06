@@ -1941,34 +1941,16 @@ void Core::sendVerbose(const char* data) {
 void Core::loop() {
     Message *message = this->popMessageFromQueue();
 
-    /* === DIAGNOSTIC BUILD (temporary) ===
-     * Loop simplified to match known-good exactly to isolate why
-     * WHAD responses never reach the host. BOARD_CLUE per-iteration
-     * work (button sampling, menu tick, stream emit) is disabled.
-     * LED_1 (red P1.01) lights when whad_get_message succeeds.
-     * LED_2 (white P0.10) lights when whad_send_message is invoked.
-     * Original behavior can be restored from git history. */
-    bool rxEverSeen = false;
-    bool txEverSent = false;
-
  	while (true) {
 
 		this->serialModule->process();
 
-        /* Check if we receveived a WHAD message. */
+        /* Check if we received a WHAD message. */
         if (whad_get_message(&msg) == WHAD_SUCCESS)
         {
-            if (!rxEverSeen) {
-                this->getLedModule()->on(LED1);
-                rxEverSeen = true;
-            }
             this->processInputMessage(msg);
         }
         if (message != NULL) {
-          if (!txEverSent) {
-              this->getLedModule()->on(LED2);
-              txEverSent = true;
-          }
           if (whad_send_message(message) == WHAD_ERROR)
           {
           }
@@ -1978,5 +1960,26 @@ void Core::loop() {
         else {
           message = this->popMessageFromQueue();
         }
+
+#ifdef BOARD_CLUE
+        /* Drive board subsystems (sensors, motion, buttons, audio,
+         * storage FSM, buzzer, display). The boot grace period in
+         * BoardModule::tick() prevents spurious button edges from
+         * generating USB traffic before enumeration completes. */
+        if (this->boardModule != NULL) {
+            this->boardModule->tick();
+        }
+
+        /* Flush dirty display regions. SPIM/TWIM/USBD all share IRQ
+         * priority 6 — none starves another. */
+        if (this->displayModule != NULL) {
+            this->displayModule->flushDirty((uint32_t)timebase_now_ms(),
+                                            DISPLAY_DEFAULT_QUANTUM, false);
+        }
+
+        if (this->menuManager != NULL) {
+            this->menuManager->tick(timebase_now_us());
+        }
+#endif
     }
 }

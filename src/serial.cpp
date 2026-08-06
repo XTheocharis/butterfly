@@ -19,6 +19,7 @@ void SerialComm::cdcAcmHandler(app_usbd_class_inst_t const * p_inst, app_usbd_cd
 	{
 		case APP_USBD_CDC_ACM_USER_EVT_PORT_OPEN:
 		{
+			instance->m_portOpen = true;
             app_usbd_class_inst_t const * p_inst =
                 app_usbd_cdc_acm_class_inst_get(&m_app_cdc_acm);
             if (p_inst != NULL && p_inst->p_data != NULL) {
@@ -39,6 +40,7 @@ void SerialComm::cdcAcmHandler(app_usbd_class_inst_t const * p_inst, app_usbd_cd
   	    break;
 
 		case APP_USBD_CDC_ACM_USER_EVT_PORT_CLOSE:
+			instance->m_portOpen = false;
 #ifdef BOARD_CLUE
 			/* BLE-HID must survive the host closing the serial port.
 			 * Only raw-WHAD preserves the legacy CDC-close-reset. */
@@ -158,6 +160,7 @@ SerialComm::SerialComm(void) {
     this->txState.done = true;
     this->currentByte = 0x00;
     this->txInProgress = false;
+    this->m_portOpen = false;
     this->init();
 }
 
@@ -205,6 +208,17 @@ void SerialComm::init() {
 
 bool SerialComm::send(uint8_t *buffer, size_t size) {
     ret_code_t ret;
+
+    /* If CDC port is not open (host hasn't connected or enumeration
+     * isn't complete), drop the packet instead of busy-waiting.
+     * The original do-while loop here would deadlock during boot:
+     * app_usbd_cdc_acm_write returns !SUCCESS when the port is
+     * closed, blocking the main loop from calling
+     * app_usbd_event_queue_process() — which prevents USB
+     * enumeration from ever completing (error -110). */
+    if (!m_portOpen) {
+        return false;
+    }
 
     do
     {

@@ -59,6 +59,7 @@ class SerialComm {
         uint8_t rxBuffer[RX_BUFFER_SIZE];
         uint8_t txBuffer[TX_BUFFER_SIZE];
         bool txInProgress;
+        bool m_portOpen;  /**< Set on PORT_OPEN, cleared on PORT_CLOSE — gates send() */
 
         uint8_t currentByte;
         static SerialComm *instance;

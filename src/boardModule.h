@@ -201,6 +201,7 @@ private:
     bool     m_lastBtnA;
     bool     m_lastBtnB;
     uint32_t m_btnPollNextMs;
+    uint32_t m_tickStartMs;
 
     /* Helper: populate a board_SensorDescriptor from eval table. */
     void populateDescriptor(board_SensorDescriptor *out,
