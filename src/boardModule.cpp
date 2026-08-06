@@ -168,10 +168,23 @@ void BoardModule::initHardware()
 	}
 	(void)m_pdm.init();
 
+	/* QSPI is not populated on the CLUE. Disable the peripheral to release
+	 * its PSEL-claimed pins for TWIM1 use. Done unconditionally after the
+	 * QSPI init block so a half-initialized peripheral cannot hold pins. */
+	NRF_QSPI->ENABLE = 0;
+	NRF_QSPI->PSEL.IO3 = 0xFFFFFFFF;
+
 	pinreg_token_t i2c_lease = PINREG_TOKEN_INVALID;
 	(void)pinreg_acquire_group(PINREG_GROUP_TWIM1,
 	                            PINREG_OWNER_SENSOR_BUS, NULL, &i2c_lease);
 	const i2cbus_backend_t *i2c_be = i2c_twim_backend_get();
+
+	nrf_gpio_cfg(CLUE_I2C_SDA,
+	    NRF_GPIO_PIN_DIR_INPUT,
+	    NRF_GPIO_PIN_INPUT_CONNECT,
+	    NRF_GPIO_PIN_PULLUP,
+	    NRF_GPIO_PIN_S0D1,
+	    NRF_GPIO_PIN_NOSENSE);
 	if (i2c_be != NULL) {
 		i2cbus_init(i2c_be, (uint32_t)i2c_lease);
 	}
