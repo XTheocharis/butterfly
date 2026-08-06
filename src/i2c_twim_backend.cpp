@@ -22,15 +22,12 @@
 static nrfx_twim_t s_twim = NRFX_TWIM_INSTANCE(1);
 static bool        s_ready;
 
-/* Pending transfer buffers (kept valid until completion).
- * i2cBus guarantees at most one outstanding hardware transfer at a time
- * (state==BUSY), so a single pair of pointer/length fields suffices. */
-static uint8_t *s_cur_read_buf;
-static size_t   s_cur_read_len;
-
-/* Completion is polled from i2c_twim_poll() in the main loop, not via ISR. */
-
-/* ---- start_xfer: enqueue a TWIM transfer ----------------------------- */
+/* ---- start_xfer: SYNC SHORTS-based TWIM transfer --------------------- *
+ * Blocks until EVENTS_STOPPED (auto-generated via SHORTS) or EVENTS_ERROR,
+ * then reports completion via i2cbus_report_xfer_complete. Mirrors the
+ * PROVEN pattern in BoardModule::syncProbeSensors (boardModule.cpp:122-175).
+ * Synchronous completion guarantees the bus is released before the next
+ * transfer starts; the i2cBus layer never sees BUSY after we return. */
 
 static int twim_start_xfer(uint8_t addr,
                            const uint8_t *write_buf, size_t write_len,
@@ -65,9 +62,35 @@ static int twim_start_xfer(uint8_t addr,
 		p->SHORTS = TWIM_SHORTS_LASTRX_STOP_Msk;
 	}
 
-	s_cur_read_buf = read_buf;
-	s_cur_read_len = read_len;
-	p->TASKS_STARTTX = 1;
+	p->TASKS_RESUME = 1;
+	if (write_len > 0) {
+		p->TASKS_STARTTX = 1;
+	} else {
+		p->TASKS_STARTRX = 1;
+	}
+
+	/* Wait for SHORTS-auto-generated STOP or for an ERROR. */
+	for (int i = 0; i < 50000 && !p->EVENTS_STOPPED && !p->EVENTS_ERROR; i++) {
+		__NOP();
+	}
+
+	/* Force STOP in case the transfer errored before SHORTS fired. */
+	p->TASKS_STOP = 1;
+	for (int i = 0; i < 5000 && !p->EVENTS_STOPPED; i++) {
+		__NOP();
+	}
+
+	p->SHORTS = 0;
+	p->EVENTS_STOPPED = 0;
+	p->EVENTS_ERROR = 0;
+
+	uint32_t errsrc = p->ERRORSRC;
+	p->ERRORSRC = errsrc;
+
+	i2cbus_result_t result = (errsrc & (TWIM_ERRORSRC_DNACK_Msk |
+	                                    TWIM_ERRORSRC_ANACK_Msk))
+		? I2CBUS_ERR_NACK : I2CBUS_OK;
+	i2cbus_report_xfer_complete(result);
 	return 0;
 }
 
