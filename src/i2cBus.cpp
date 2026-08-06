@@ -325,7 +325,7 @@ void i2cbus_tick(void) {
 				                     g_active.xfer.write_len,
 				                     g_active.xfer.read_buf,
 				                     g_active.xfer.read_len);
-			break;
+			if (g_state == I2CBUS_STATE_BUSY) break;
 		}
 	}
 }

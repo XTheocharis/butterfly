@@ -242,6 +242,7 @@ ifeq ($(PLATFORM),BOARD_CLUE)
 	SRC_FILES += $(PROJ_DIR)/boardModule.cpp
 	SRC_FILES += $(PROJ_DIR)/i2cBus.cpp
 	SRC_FILES += $(PROJ_DIR)/i2c_twim_backend.cpp
+	SRC_FILES += $(PROJ_DIR)/i2c_sync.cpp
 	SRC_FILES += $(PROJ_DIR)/sensors/imu.cpp
 	SRC_FILES += $(PROJ_DIR)/sensors/mag.cpp
 	SRC_FILES += $(PROJ_DIR)/sensors/sht31d.cpp
