@@ -27,6 +27,8 @@
 #include "ble/advertising.h"
 #include "ble/bond.h"
 #include "ble/profiles_eval.c"
+#include "i2c_sync.h"
+#include "sensors/imu.h"
 #include "storage/calib.h"
 #include "storage/qspi.h"
 #include "storage/qspi_journal.h"
@@ -36,6 +38,10 @@
 #include "expert/gpio.h"
 #include "expert/adc.h"
 #include "sensors/apds9960.h"
+#include "sensors/mag.h"
+#include "sensors/bmp280.h"
+#include "sensors/sht31d.h"
+#include "nrf_delay.h"
 #endif
 
 /* Pull in the pure-logic eval functions. */
@@ -76,6 +82,8 @@ BoardModule::BoardModule(Core *core)
 	m_btnPollNextMs = 0;
 	m_tickStartMs = 0;
 	m_sensorsInitPending = false;
+	m_sensorInitStartMs = 0;
+	m_sensorInitNextMs = 0;
 #ifdef BOARD_CLUE
 	m_profiles = nullptr;
 	m_dashboardRegistered = false;
@@ -112,42 +120,35 @@ BoardModule::BoardModule(Core *core)
 #endif
 }
 
-/* Synchronous I2C probe using raw TWIM1 register polling.
+/* Synchronous I2C probe using the proven i2c_sync API.
  * The async IRQ-driven probe path doesn't work (TWIM IRQ not firing
- * reliably in this boot configuration). This replaces it with a
- * blocking poll — ~1ms per sensor, 5ms total, called from tick()
- * after USB enumeration is stable. */
-static const uint8_t PROBE_ADDRS[] = {0x6A, 0x1C, 0x39, 0x44, 0x77};
-static const uint8_t PROBE_REGS[]  = {0x0F, 0x0F, 0x92, 0x00, 0xD0};
+ * reliably in this boot configuration). i2c_sync_read_reg was verified
+ * to return real data from the command-handler context (handleReadSensor);
+ * using the same API here ensures the probe works from tick() too. */
 void BoardModule::syncProbeSensors(void)
 {
 #ifdef BOARD_CLUE
-	NRF_TWIM_Type *p = NRF_TWIM1;
-	for (size_t i = 0; i < sizeof(PROBE_ADDRS); i++) {
-		uint8_t reg = PROBE_REGS[i];
+	static const struct {
+		uint8_t addr;
+		uint8_t who_am_i_reg;
+		uint8_t expected;
+	} probes[] = {
+		{0x6A, 0x0F, 0x69},  /* LSM6DS33 IMU */
+		{0x1C, 0x0F, 0x3D},  /* LIS3MDL mag */
+		{0x39, 0x92, 0xAB},  /* APDS9960 */
+		{0x44, 0x00, 0x00},  /* SHT31D (no WHO_AM_I, just check ACK) */
+		{0x77, 0xD0, 0x58},  /* BMP280 */
+	};
+
+	for (size_t i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
 		uint8_t val = 0xFF;
-		p->ADDRESS = PROBE_ADDRS[i];
-		p->TXD.PTR = (uint32_t)&reg;
-		p->TXD.MAXCNT = 1;
-		p->RXD.PTR = (uint32_t)&val;
-		p->RXD.MAXCNT = 1;
-		p->EVENTS_STOPPED = 0;
-		p->EVENTS_ERROR = 0;
-		p->EVENTS_LASTTX = 0;
-		p->EVENTS_LASTRX = 0;
-		p->SHORTS = TWIM_SHORTS_LASTTX_STARTRX_Msk | TWIM_SHORTS_LASTRX_STOP_Msk;
-		p->TASKS_RESUME = 1;
-		p->TASKS_STARTTX = 1;
-		for (int j = 0; j < 50000 && !p->EVENTS_LASTRX && !p->EVENTS_ERROR; j++) { __NOP(); }
-		p->TASKS_STOP = 1;
-		for (int j = 0; j < 5000 && !p->EVENTS_STOPPED; j++) { __NOP(); }
-		p->SHORTS = 0;
-		p->EVENTS_STOPPED = 0;
-		uint32_t errsrc = p->ERRORSRC;
-		p->EVENTS_ERROR = 0;
-		p->ERRORSRC = errsrc;
-		if (!errsrc && val != 0xFF && val != 0x00) {
-			i2cbus_force_presence(PROBE_ADDRS[i]);
+		i2c_sync_result_t r = i2c_sync_read_reg(probes[i].addr,
+		                                        probes[i].who_am_i_reg,
+		                                        &val, 1);
+		if (r == I2C_SYNC_OK) {
+			/* Device ACKed — mark as present. For SHT31D there is no
+			 * WHO_AM_I register; the address ACK alone proves presence. */
+			i2cbus_force_presence(probes[i].addr);
 		}
 	}
 #endif
@@ -188,7 +189,9 @@ void BoardModule::initHardware()
 	if (i2c_be != NULL) {
 		i2cbus_init(i2c_be, (uint32_t)i2c_lease);
 	}
-	m_sensorsInitPending = true;
+	m_sensorsInitPending  = true;
+	m_sensorInitStartMs   = (uint32_t)(timebase_now_us() / 1000ull);
+	m_sensorInitNextMs    = m_sensorInitStartMs + 200u;  /* first retry at +200ms */
 #endif
 }
 
@@ -649,8 +652,157 @@ void BoardModule::handleReadSensor(uint32_t requestId,
 
 #ifdef BOARD_CLUE
 	MotionManager::SampleStatus ss = MotionManager::STALE;
-	uint32_t n = m_motion.readSensor(req.sensor_id, values, &ss);
+	uint32_t n = 0;
 
+	n = m_motion.readSensor(req.sensor_id, values, &ss);
+
+	/* Command-driven I2C reads. i2c_sync is proven reliable from this
+	 * command-handler context (TWIM1 fails from tick() context, root
+	 * cause unknown). Each case does a synchronous transfer when
+	 * `wboard sensor read N` arrives. Config is done once per sensor
+	 * via static flags; data is read fresh on every call. */
+	switch (req.sensor_id) {
+	case 1: case 2: { /* LSM6DS33 IMU @ 0x6A — accel (1) + gyro (2) */
+		static bool s_imu_cfg = false;
+		if (!s_imu_cfg) {
+			uint8_t c1[] = {0x10, 0x48}; i2c_sync_write(0x6A, c1, 2);
+			uint8_t c2[] = {0x12, 0x44}; i2c_sync_write(0x6A, c2, 2);
+			s_imu_cfg = true;
+		}
+		uint8_t buf[12];
+		memset(buf, 0, sizeof(buf));
+		if (i2c_sync_read_reg(0x6A, 0x22, buf, 12) == I2C_SYNC_OK) {
+			if (req.sensor_id == 1) {
+				int16_t ax = (int16_t)((uint16_t)buf[6]  | ((uint16_t)buf[7]  << 8));
+				int16_t ay = (int16_t)((uint16_t)buf[8]  | ((uint16_t)buf[9]  << 8));
+				int16_t az = (int16_t)((uint16_t)buf[10] | ((uint16_t)buf[11] << 8));
+				values[0] = (int32_t)((float)ax * 0.061f);
+				values[1] = (int32_t)((float)ay * 0.061f);
+				values[2] = (int32_t)((float)az * 0.061f);
+			} else {
+				int16_t gx = (int16_t)((uint16_t)buf[0] | ((uint16_t)buf[1] << 8));
+				int16_t gy = (int16_t)((uint16_t)buf[2] | ((uint16_t)buf[3] << 8));
+				int16_t gz = (int16_t)((uint16_t)buf[4] | ((uint16_t)buf[5] << 8));
+				values[0] = imu_gyro_to_mdps(gx);
+				values[1] = imu_gyro_to_mdps(gy);
+				values[2] = imu_gyro_to_mdps(gz);
+			}
+			n = 3; ss = MotionManager::FRESH;
+		}
+		break;
+	}
+	case 3: { /* LIS3MDL magnetometer @ 0x1C */
+		static bool s_mag_cfg = false;
+		if (!s_mag_cfg) {
+			i2c_sync_write_reg_byte(0x1C, 0x20, 0xF8);
+			i2c_sync_write_reg_byte(0x1C, 0x21, 0x00);
+			i2c_sync_write_reg_byte(0x1C, 0x22, 0x00);
+			i2c_sync_write_reg_byte(0x1C, 0x23, 0x0C);
+			i2c_sync_write_reg_byte(0x1C, 0x24, 0x40);
+			s_mag_cfg = true;
+		}
+		uint8_t buf[6];
+		memset(buf, 0, sizeof(buf));
+		if (i2c_sync_read_reg(0x1C, 0x28, buf, 6) == I2C_SYNC_OK) {
+			mag_raw_t raw; mag_parse_burst(buf, &raw);
+			mag_sample_t s;  mag_convert(&raw, &s);
+			values[0] = s.x_mg;
+			values[1] = s.y_mg;
+			values[2] = s.z_mg;
+			n = 3; ss = MotionManager::FRESH;
+		}
+		break;
+	}
+	case 6: case 7: { /* BMP280 @ 0x77 — pressure (6) + temperature (7) */
+		static bool s_bmp_cfg = false;
+		static bmp280_calib_t s_bmp_calib;
+		if (!s_bmp_cfg) {
+			uint8_t cal[24];
+			memset(cal, 0, sizeof(cal));
+			if (i2c_sync_read_reg(0x77, 0x88, cal, 24) != I2C_SYNC_OK)
+				break;
+			bmp280_parse_calib(cal, &s_bmp_calib);
+			i2c_sync_write_reg_byte(0x77, 0xF5, 0x28); /* config: t_sb=62.5ms, filter=4 */
+			i2c_sync_write_reg_byte(0x77, 0xF4, 0x4F); /* ctrl_meas: osrs_t=x2, osrs_p=x4, normal */
+			s_bmp_cfg = true;
+			nrf_delay_ms(20); /* first normal-mode conversion completes (~16ms) */
+		}
+		uint8_t buf[6];
+		memset(buf, 0, sizeof(buf));
+		if (i2c_sync_read_reg(0x77, 0xF7, buf, 6) == I2C_SYNC_OK) {
+			bmp280_sample_t s;
+			bmp280_compensate(buf, &s_bmp_calib, NULL, &s);
+			if (req.sensor_id == 6)
+				values[0] = (int32_t)s.pressure_pa;
+			else
+				values[0] = s.temp_milli_c;
+			n = 1; ss = MotionManager::FRESH;
+		}
+		break;
+	}
+	case 8: case 9: { /* SHT31-D @ 0x44 — humidity (8) + temperature (9) */
+		uint8_t cmd[2] = {0x24, 0x0B}; /* single-shot, medium repeatability */
+		if (i2c_sync_write(0x44, cmd, 2) != I2C_SYNC_OK)
+			break;
+		nrf_delay_ms(7); /* max 6.5ms conversion, no clock stretching */
+		uint8_t buf[6];
+		memset(buf, 0, sizeof(buf));
+		if (i2c_sync_read_only(0x44, buf, 6) == I2C_SYNC_OK) {
+			sht31d_sample_t s;
+			if (sht31d_convert(buf, &s) == SHT31D_OK) {
+				if (req.sensor_id == 8)
+					values[0] = (int32_t)s.humidity_milli_rh;
+				else
+					values[0] = s.temp_milli_c;
+				n = 1; ss = MotionManager::FRESH;
+			}
+		}
+		break;
+	}
+	case 10: case 11: { /* APDS-9960 @ 0x39 — color (10) + proximity (11) */
+		static bool s_apds_cfg = false;
+		if (!s_apds_cfg) {
+			static const uint8_t INIT_SEQ[][2] = {
+				{0x81, 0xFF}, /* ATIME  */
+				{0x83, 0xFF}, /* WTIME  */
+				{0x8E, 0xC9}, /* PPULSE */
+				{0x8F, 0x20}, /* CONTROL*/
+				{0x90, 0x00}, /* CONFIG2*/
+				{0x89, 0x00}, /* PILT   */
+				{0x8B, 0xFF}, /* PIHT   */
+				{0x8C, 0x11}, /* PERS   */
+				{0x80, 0x27}, /* ENABLE: PON+AEN+PEN+PIEN (written last) */
+			};
+			for (size_t i = 0; i < sizeof(INIT_SEQ)/sizeof(INIT_SEQ[0]); i++)
+				i2c_sync_write_reg_byte(0x39, INIT_SEQ[i][0], INIT_SEQ[i][1]);
+			s_apds_cfg = true;
+			nrf_delay_ms(10); /* first RGBC integration settle */
+		}
+		uint8_t rgbc[8];
+		memset(rgbc, 0, sizeof(rgbc));
+		if (i2c_sync_read_reg(0x39, 0x94, rgbc, 8) == I2C_SYNC_OK) {
+			apds9960_optical_sample_t s;
+			apds9960_parse_rgbc(rgbc, &s);
+			uint8_t pdata = 0;
+			i2c_sync_read_reg(0x39, 0x9C, &pdata, 1);
+			s.proximity = pdata;
+			if (req.sensor_id == 10) {
+				values[0] = (int32_t)s.clear;
+				values[1] = (int32_t)s.red;
+				values[2] = (int32_t)s.green;
+				values[3] = (int32_t)s.blue;
+				n = 4;
+			} else {
+				values[0] = (int32_t)s.proximity;
+				n = 1;
+			}
+			ss = MotionManager::FRESH;
+		}
+		break;
+	}
+	default:
+		break;
+	}
 	if (n > 0) {
 		status = (ss == MotionManager::FRESH)
 		       ? board_SensorStatusFlag_SENSOR_STATUS_NONE
@@ -2185,14 +2337,24 @@ void BoardModule::tick(void)
 	 * inject* callbacks below before the motion tick consumes it. */
 
 	/* Deferred sensor init: TWIM1 needs settling time after nrfx_twim_init
-	 * before synchronous transfers succeed. Probe presence + init drivers
-	 * after a 50ms grace period (verified working on live CLUE: P=0x1F). */
+	 * before synchronous transfers succeed. The original one-shot at
+	 * boot+50ms was too early — on cold boot TWIM1 produces no EVENTS
+	 * until a few hundred ms later. Retry every 200ms until at least one
+	 * sensor presence bit shows up, and give up after 5 s so drivers
+	 * still get init()'d (they handle absent sensors gracefully). */
 	if (m_sensorsInitPending) {
-		uint32_t elapsed_ms = (uint32_t)(now_us / 1000ull) - m_tickStartMs;
-		if (elapsed_ms > 50u) {
-			m_sensorsInitPending = false;
+		uint32_t now_ms = (uint32_t)(now_us / 1000ull);
+		if (now_ms >= m_sensorInitNextMs) {
+			m_sensorInitNextMs = now_ms + 200u;
 			syncProbeSensors();
-			(void)m_sensors.init(now_us, 0);
+			uint32_t pres = i2cbus_get_presence();
+			if (pres != 0) {
+				m_sensorsInitPending = false;
+				(void)m_sensors.init(now_us, 0);
+			} else if (now_ms - m_sensorInitStartMs > 5000u) {
+				m_sensorsInitPending = false;
+				(void)m_sensors.init(now_us, 0);  /* drivers handle !present */
+			}
 		}
 	}
 

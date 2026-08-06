@@ -202,7 +202,9 @@ private:
     bool     m_lastBtnB;
     uint32_t m_btnPollNextMs;
     uint32_t m_tickStartMs;
-    bool m_sensorsInitPending;
+    bool     m_sensorsInitPending;    /* true until probes succeed or timeout */
+    uint32_t m_sensorInitStartMs;     /* boot time (ms) when retries began   */
+    uint32_t m_sensorInitNextMs;      /* next retry time (ms)                */
     void syncProbeSensors(void);
 
     /* Helper: populate a board_SensorDescriptor from eval table. */
